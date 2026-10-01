@@ -23,6 +23,7 @@ const DEFAULT_SETTINGS = {
   justify: true,          // 两端对齐 + 自动断词
   readingMode: 'page',    // page=翻页（像书一样） scroll=滚动
   columns: 'auto',        // auto=宽屏两栏 one=始终一栏
+  showTranslation: false, // 中文对照
 };
 let settings = (() => {
   try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SET_KEY) || '{}') }; }
@@ -202,6 +203,7 @@ async function openArticle(id) {
 
   renderReader();
   setView('reader');
+  if (settings.showTranslation) setTimeout(() => applyCachedTranslations(), 60);
   if (isPaged()) {
     requestAnimationFrame(() => relayoutPages(false));
   } else {
@@ -468,6 +470,119 @@ function renderReader() {
   // 注意：分页要等视图真正显示后再算宽度，见 openArticle
 }
 
+/* ══════════════════════════  段落翻译 / 中文对照  ══════════════════════════ */
+
+const trKey = (articleId, bi) => `tr:${articleId}:${bi}`;
+let trRunning = false;
+
+function blockText(bi) {
+  const b = S.cur && S.cur.parsed.blocks[bi];
+  if (!b) return '';
+  return b.sentences.map(x => x.text).join(' ');
+}
+
+/** 把译文插到某一段的下面（已存在就更新） */
+function insertTranslation(bi, text) {
+  const host = $(`#reader-body [data-bi="${bi}"]`);
+  if (!host || !text) return null;
+  let node = host.nextElementSibling;
+  if (!node || !node.classList || !node.classList.contains('tr-block')) {
+    node = document.createElement('div');
+    node.className = 'tr-block';
+    host.after(node);
+  }
+  node.dataset.trBi = String(bi);
+  node.innerHTML = `<span class="tr-tag">译</span>${esc(text)}`;
+  return node;
+}
+
+/** 渲染后把已经翻译过的段落补回来（不联网、不花钱） */
+async function applyCachedTranslations() {
+  if (!S.cur || !settings.showTranslation) return 0;
+  const { article, parsed } = S.cur;
+  let missing = 0;
+  for (let bi = 0; bi < parsed.blocks.length; bi++) {
+    if (parsed.blocks[bi].type === 'h') continue;
+    const hit = await db.get('aica', trKey(article.id, bi));
+    if (hit && hit.text) insertTranslation(bi, hit.text);
+    else missing++;
+  }
+  if (isPaged()) relayoutPages(true);
+  return missing;
+}
+
+/** 单段：先查缓存，没有再问 AI */
+async function ensureTranslation(bi) {
+  const { article } = S.cur || {};
+  if (!article) return '';
+  const k = trKey(article.id, bi);
+  const hit = await db.get('aica', k);
+  if (hit && hit.text) { insertTranslation(bi, hit.text); return hit.text; }
+  const text = blockText(bi);
+  if (!text.trim()) return '';
+  const tr = await ai.translateParagraph(text);
+  if (tr) await db.put('aica', { k, text: tr, t: Date.now() });
+  insertTranslation(bi, tr);
+  return tr;
+}
+
+/** 整篇翻译：并发 3 路，边翻边显示，带进度 */
+async function translateArticle(force = false) {
+  if (!S.cur || trRunning) return;
+  if (!ai.hasKey()) { toast('需要先在「设置 → AI 引擎」填 API Key', 4000); return; }
+  const { article, parsed } = S.cur;
+
+  const targets = [];
+  parsed.blocks.forEach((b, bi) => { if (b.type !== 'h') targets.push(bi); });
+  if (!targets.length) { toast('这篇文章没有可翻译的正文'); return; }
+
+  if (parsed.words > 8000 && !force) {
+    const ok = confirm('这篇有 ' + parsed.words.toLocaleString() + ' 个词，\n'
+      + '全文翻译大约要花几毛钱（已经翻过的段落不会重复收费）。\n\n确定继续吗？');
+    if (!ok) return;
+  }
+
+  trRunning = true;
+  const bar = $('#tr-progress');
+  const show = t => { if (bar) { bar.hidden = false; bar.textContent = t; } };
+  show(`准备翻译 ${targets.length} 段…`);
+
+  let done = 0, cached = 0, failed = 0;
+  const queue = [...targets];
+  const worker = async () => {
+    while (queue.length) {
+      const bi = queue.shift();
+      try {
+        const k = trKey(article.id, bi);
+        const hit = await db.get('aica', k);
+        if (hit && hit.text) { cached++; insertTranslation(bi, hit.text); }
+        else { await ensureTranslation(bi); }
+      } catch (e) {
+        failed++;
+        if (failed === 1) toast('翻译出错：' + e.message, 5000);
+      }
+      done++;
+      show(`翻译中 ${done}/${targets.length} 段…（${cached} 段来自缓存）`);
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(3, targets.length) }, worker));
+    scheduleSync();
+    if (isPaged()) relayoutPages(true);
+    toast(failed
+      ? `翻译完成 ${done - failed} 段，${failed} 段失败`
+      : `翻译完成：${targets.length} 段（${cached} 段命中缓存，没重复花钱）`, 4000);
+  } finally {
+    trRunning = false;
+    if (bar) { bar.hidden = true; bar.textContent = ''; }
+  }
+}
+
+function removeTranslations() {
+  $$('.tr-block').forEach(n => n.remove());
+  if (isPaged()) relayoutPages(true);
+}
+
 /* 阅读进度 */
 let progTimer = null;
 function onScroll() {
@@ -587,6 +702,7 @@ async function showWordPanel(surface, sid, surfaceText) {
 
   const extra = [];
   if (sentence) extra.push(`<button class="btn" data-action="to-sentence" data-sid="${sid}">整句翻译 · 语法</button>`);
+  if (sentence) extra.push(`<button class="btn" data-action="translate-block" data-sid="${sid}">译本段</button>`);
   extra.push(`<button class="btn" data-action="copy-word">复制</button>`);
   $('#panel-foot').insertAdjacentHTML('beforeend', extra.join(''));
 
@@ -1163,6 +1279,7 @@ function renderSettings() {
   $('#set-columns').value = settings.columns || 'auto';
   $('#set-para').value = settings.paraStyle || 'web';
   $('#set-justify').checked = settings.justify !== false;
+  $('#set-translation').checked = !!settings.showTranslation;
   $('#set-autoai').checked = !!settings.autoAI;
   $('#set-rate').value = settings.ttsRate;
   $('#set-rate-v').textContent = (settings.ttsRate / 100).toFixed(2) + '×';
@@ -1337,6 +1454,35 @@ async function importFromUrl() {
   }
 }
 
+/** 导出成 Anki / 欧路词典能直接导入的 TSV（制表符分隔） */
+function exportVocabAnki() {
+  const list = [...S.vocab.values()];
+  if (!list.length) { toast('生词本还是空的'); return; }
+  const esc2 = t => String(t || '').replace(/[\t\r\n]+/g, ' ').trim();
+  const rows = [
+    '#separator:tab',
+    '#html:true',
+    '#columns:单词\t音标\t释义\t原句\t出处',
+  ];
+  for (const c of list) {
+    const front = esc2(c.word);
+    const back = [
+      c.phonetic ? `/${esc2(c.phonetic)}/` : '',
+      esc2(c.translation),
+      c.sentence ? `<br><br><i>${esc2(c.sentence)}</i>` : '',
+      c.articleTitle ? `<br><span style="color:#888">— ${esc2(c.articleTitle)}</span>` : '',
+    ].filter(Boolean).join('');
+    rows.push([front, esc2(c.phonetic), esc2(c.translation), esc2(c.sentence), esc2(c.articleTitle)].join('\t'));
+  }
+  const blob = new Blob(['\ufeff' + rows.join('\n')], { type: 'text/tab-separated-values;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `lexiread-生词本-${new Date().toISOString().slice(0, 10)}.txt`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  toast(`已导出 ${list.length} 个生词，可在 Anki 里「导入文件」直接使用`, 4500);
+}
+
 async function exportData() {
   const bodies = [];
   for (const a of S.articles) {
@@ -1395,6 +1541,7 @@ const ACTIONS = {
   'go-settings': () => { closeModal(); setView('settings'); },
   'start-review': () => startReview(),
   'vocab-export': () => exportData(),
+  'vocab-anki': () => exportVocabAnki(),
   'data-import': () => $('#file-import').click(),
   'data-wipe': async () => {
     if (!confirm('确定要清空所有文章、生词和缓存吗？此操作不可撤销。')) return;
@@ -1404,6 +1551,51 @@ const ACTIONS = {
     setView('library');
   },
   'back-top': () => window.scrollTo({ top: 0, behavior: 'smooth' }),
+  'toggle-translation': async (btn) => {
+    settings.showTranslation = !settings.showTranslation;
+    saveSettings();
+    if (btn) btn.classList.toggle('is-on', settings.showTranslation);
+    if (settings.showTranslation) {
+      const missing = await applyCachedTranslations();
+      if (missing > 0) translateArticle();
+      else toast('译文已显示（全部来自缓存）');
+    } else {
+      removeTranslations();
+      toast('已隐藏译文');
+    }
+  },
+  'translate-block': async (btn) => {
+    if (!S.cur) return;
+    const sid = +btn.dataset.sid;
+    const bi = S.cur.sidBlock ? S.cur.sidBlock[sid] : -1;
+    if (bi < 0) { toast('定位不到这一段'); return; }
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = '翻译中…';
+    try {
+      await ensureTranslation(bi);
+      settings.showTranslation = true; saveSettings();
+      const tb = $('[data-action="toggle-translation"]');
+      if (tb) tb.classList.add('is-on');
+      scheduleSync();
+      if (isPaged()) {
+        relayoutPages(true);
+        setTimeout(() => {
+          const node = $(`#reader-body .tr-block[data-tr-bi="${bi}"]`);
+          if (node) {
+            const body = $('#reader-body');
+            const x = node.getBoundingClientRect().left - body.getBoundingClientRect().left;
+            goPage(Math.floor((x + 4) / Math.max(1, PG.step)), true);
+          }
+        }, 220);
+      } else {
+        const node = $(`#reader-body .tr-block[data-tr-bi="${bi}"]`);
+        if (node) node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
+    } catch (e) { toast('翻译失败：' + e.message, 4500); }
+    btn.disabled = false;
+    btn.textContent = old;
+  },
   'page-prev': () => goPage(PG.page - 1),
   'page-next': () => goPage(PG.page + 1),
   'toggle-tools': () => document.body.classList.toggle('tools-open'),
@@ -1765,6 +1957,13 @@ function wire() {
   });
   $('#set-para').addEventListener('change', e => { settings.paraStyle = e.target.value; saveSettings(); });
   $('#set-justify').addEventListener('change', e => { settings.justify = e.target.checked; saveSettings(); });
+  $('#set-translation').addEventListener('change', e => {
+    settings.showTranslation = e.target.checked; saveSettings();
+    const tb = $('[data-action="toggle-translation"]');
+    if (tb) tb.classList.toggle('is-on', settings.showTranslation);
+    if (settings.showTranslation) applyCachedTranslations().then(n => { if (n > 0) translateArticle(); });
+    else removeTranslations();
+  });
   $('#set-autoai').addEventListener('change', e => { settings.autoAI = e.target.checked; saveSettings(); });
   $('#sync-body').addEventListener('change', e => {
     if (e.target.id === 'sy-auto') {

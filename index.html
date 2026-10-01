@@ -81,11 +81,13 @@
       <div class="reader-tools" id="reader-tools">
         <button class="tool" data-action="tts-play">🔊 朗读</button>
         <button class="tool" data-action="tts-stop">⏹ 停止</button>
+        <button class="tool" data-action="toggle-translation">中 译文</button>
         <button class="tool" data-action="article-guide">✨ 导读</button>
         <button class="tool" data-action="toggle-focus">◎ 专注</button>
         <button class="tool" data-action="reader-settings">Aa 排版</button>
       </div>
     </div>
+    <div id="tr-progress" hidden></div>
     <div id="reader-viewport">
       <article id="reader-body" class="reader-body" lang="en"></article>
     </div>
@@ -107,7 +109,8 @@
     </div>
     <div class="row-actions">
       <button class="btn primary" data-action="start-review">开始复习 <b id="due-count" class="badge" hidden>0</b></button>
-      <button class="btn" data-action="vocab-export">导出</button>
+      <button class="btn" data-action="vocab-anki">导出 Anki</button>
+      <button class="btn" data-action="vocab-export">备份全部数据</button>
     </div>
     <div id="vocab-list" class="card-list"></div>
   </section>
@@ -205,6 +208,9 @@
       </label>
       <label class="field"><span>两端对齐</span>
         <input id="set-justify" type="checkbox">
+      </label>
+      <label class="field"><span>显示中文译文（对照阅读）</span>
+        <input id="set-translation" type="checkbox">
       </label>
       <label class="field"><span>点词后自动请求 AI 讲解</span>
         <input id="set-autoai" type="checkbox">

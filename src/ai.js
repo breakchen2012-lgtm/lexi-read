@@ -319,6 +319,29 @@ export function articlePrompt({ title, text }) {
   ];
 }
 
+/** 整段翻译：只要译文，不要任何解释 */
+export function translateParagraphPrompt({ text }) {
+  return [
+    {
+      role: 'system',
+      content: '你是专业英中译者。把用户给的英文译成自然、地道、通顺的简体中文。'
+        + '只输出译文本身：不要开场白、不要解释、不要括号注释、不要重复原文、不要加「译文：」之类的字样。'
+        + '保留原文的段落与标点风格，人名地名和术语用通行译法。',
+    },
+    { role: 'user', content: text },
+  ];
+}
+
+/** 整段翻译（走缓存，同一段不会重复花钱） */
+export async function translateParagraph(text, opts = {}) {
+  return streamChat({
+    messages: translateParagraphPrompt({ text }),
+    temperature: 0.2,
+    maxTokens: 1600,
+    ...opts,
+  });
+}
+
 export function cacheKeyFor(type, parts) {
   return type + ':' + hash(parts.filter(Boolean).join('\u0001'));
 }

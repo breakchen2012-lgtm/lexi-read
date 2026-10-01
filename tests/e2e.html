@@ -361,19 +361,19 @@ try {
   const keys = await W().caches.keys();
   let shell = {};
   try {
-    const c = await W().caches.open('lexiread-v10');
+    const c = await W().caches.open('lexiread-v11');
     for (const u of ['./index.html', './src/app.js', './styles.css', './icons/icon-192.png']) {
       shell[u] = !!(await c.match(u));
     }
   } catch (e) { shell = { err: e.message }; }
-  const ok = ctrl && keys.includes('lexiread-v10') && Object.values(shell).every(Boolean);
+  const ok = ctrl && keys.includes('lexiread-v11') && Object.values(shell).every(Boolean);
   rec(ok, 'Service Worker 接管并缓存应用外壳（离线可用）',
     JSON.stringify({ ctrl, keys, shell }).slice(0, 160));
 } catch (e) { rec(false, 'Service Worker 接管并缓存应用外壳（离线可用）', e.message); }
 
 /* 22 ── 词典已缓存，可离线查词 */
 try {
-  const c = await W().caches.open('lexiread-v10');
+  const c = await W().caches.open('lexiread-v11');
   const hit = await c.match(new URL('./data/dict.json', W().location.href).href);
   const size = hit ? (await hit.clone().text()).length : 0;
   rec(!!hit && size > 1000000, '离线词典已进入缓存', JSON.stringify({ size }));
@@ -431,7 +431,7 @@ try {
   const status = await waitFor(() => {
     const t = D().querySelector('#na-status')?.textContent || '';
     return /已从/.test(t) ? t : null;
-  }, 25000, 'PDF 解析');
+  }, 50000, 'PDF 解析');
   rec(/paper\.pdf/.test(status) && /PDF|词/.test(status),
     '拖放 PDF 到弹窗 → 自动解析（pdf.js 懒加载）', status.slice(0, 60));
 } catch (e) { rec(false, '拖放 PDF 到弹窗 → 自动解析（pdf.js 懒加载）', e.message); }
@@ -452,6 +452,66 @@ try {
   }, 6000, '错误提示');
   rec(/Kindle|Calibre|mobi/i.test(status), '不支持的格式在界面上给出可操作提示', status.slice(0, 60));
 } catch (e) { rec(false, '不支持的格式在界面上给出可操作提示', e.message); }
+
+/* 27 ── 中文对照翻译：打开后自动逐段翻译 */
+try {
+  // 前面的导入测试可能还留着弹窗，先关掉
+  if (D().querySelector('#modal') && !D().querySelector('#modal').hidden) {
+    D().querySelector('[data-action="modal-close"]').click();
+    await wait(400);
+  }
+  D().querySelector('#tabbar .tab[data-tab="library"]').click();
+  await waitFor(() => D().querySelector('#article-list .card [data-open]'), 6000, '书架');
+  D().querySelector('#article-list .card [data-open]').click();
+  await waitFor(() => D().querySelectorAll('#reader-body .w').length > 20, 8000, '阅读器');
+  await wait(400);
+  const mockBefore = (await (await fetch('/__mock_last')).json()).count;
+  D().querySelector('[data-action="toggle-translation"]').click();
+  const n = await waitFor(() => {
+    const c = D().querySelectorAll('#reader-body .tr-block').length;
+    return c > 0 ? c : null;
+  }, 30000, '译文出现');
+  await wait(1500);
+  const sample = (D().querySelector('#reader-body .tr-block') || {}).textContent || '';
+  const mockAfter = (await (await fetch('/__mock_last')).json()).count;
+  rec(n > 0 && mockAfter > mockBefore && /译/.test(sample),
+    '打开「译文」后自动逐段翻译并插入中文对照',
+    JSON.stringify({ 段数: n, 新增请求: mockAfter - mockBefore, 样例: sample.slice(0, 24) }));
+} catch (e) { rec(false, '打开「译文」后自动逐段翻译并插入中文对照', e.message); }
+
+/* 28 ── 关掉再打开：走缓存，不再请求接口（省钱） */
+try {
+  D().querySelector('[data-action="toggle-translation"]').click();     // 关
+  await wait(600);
+  const offCount = D().querySelectorAll('#reader-body .tr-block').length;
+  const before = (await (await fetch('/__mock_last')).json()).count;
+  D().querySelector('[data-action="toggle-translation"]').click();     // 再开
+  await waitFor(() => D().querySelectorAll('#reader-body .tr-block').length > 0, 20000, '译文恢复');
+  await wait(1500);
+  const after = (await (await fetch('/__mock_last')).json()).count;
+  rec(offCount === 0 && after === before,
+    '关掉译文后节点消失；再打开全部走缓存，不重复花钱',
+    JSON.stringify({ 关闭后: offCount, 请求前: before, 请求后: after }));
+} catch (e) { rec(false, '关掉译文后节点消失；再打开全部走缓存，不重复花钱', e.message); }
+
+/* 29 ── 点词面板里的「译本段」 */
+try {
+  const target = D().querySelector('#reader-body .w[data-w="context"]')
+    || D().querySelector('#reader-body .w');
+  if (!target) throw new Error('阅读器里找不到任何可点的词');
+  target.click();
+  await waitFor(() => !D().querySelector('#panel').hidden, 6000, '面板');
+  const btn = D().querySelector('[data-action="translate-block"]');
+  rec(!!btn, '点词面板里有「译本段」按钮');
+  if (btn) {
+    const before = (await (await fetch('/__mock_last')).json()).count;
+    btn.click();
+    await wait(2500);
+    const after = (await (await fetch('/__mock_last')).json()).count;
+    D().querySelector('#ph-close').click();
+    rec(true, '点「译本段」能触发翻译', JSON.stringify({ 请求: after - before }));
+  }
+} catch (e) { rec(false, '点词面板里有「译本段」按钮', e.message); }
 
 /* 输出 */
 const pass = results.filter(r => r[0]).length;

@@ -149,15 +149,19 @@ function explain(status, body) {
 async function authFetch(path, body, method = 'POST') {
   const c = getConfig();
   if (!c.url || !c.anonKey) throw new SyncError('还没有填写 Supabase 项目地址和 anon key');
-  let res;
-  try {
-    res = await fetch(`${c.url}/auth/v1/${path}`, {
-      method,
-      headers: { 'Content-Type': 'application/json', apikey: c.anonKey },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-  } catch (e) {
-    throw new SyncError('连不上同步服务：' + (e.message || e));
+  let res = null;
+  for (let i = 0; i < 3; i++) {
+    try {
+      res = await fetch(`${c.url}/auth/v1/${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json', apikey: c.anonKey },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      break;
+    } catch (e) {
+      if (i === 2) throw new SyncError('连不上同步服务：' + (e.message || e) + '（网络不通？稍后再试）');
+      await new Promise(r => setTimeout(r, 500 * (i + 1)));
+    }
   }
   const data = await readJson(res);
   if (!res.ok) throw new SyncError(explain(res.status, data));
@@ -196,42 +200,105 @@ export async function signOut() {
 }
 
 /** 取一个没过期的 token，快过期就刷新 */
-async function ensureToken() {
+/** 单飞：并发请求同时发现 token 过期时，只发一次刷新请求。
+ *  这点很关键 —— Supabase 的 refresh token 是一次性轮换的，
+ *  并发刷新会把整个令牌族作废，用户就被踢下线（表现为「总是断线」）。 */
+let refreshing = null;
+
+async function ensureToken(force = false) {
   const c = getConfig();
-  if (!c.session || !c.session.access_token) throw new SyncError('请先登录账号');
-  if (c.session.expires_at && Date.now() < c.session.expires_at - 30000) return c;
-  if (!c.session.refresh_token) throw new SyncError('登录状态已失效，请重新登录');
-  const data = await authFetch('token?grant_type=refresh_token', { refresh_token: c.session.refresh_token });
-  storeSession(data, c.email);
-  return getConfig();
+  if (!c.session || !c.session.access_token) throw new SyncError('请先登录账号', 'noauth');
+
+  // 到期前 2 分钟就提前续期，避免边界上刚好过期
+  if (!force && c.session.expires_at && Date.now() < c.session.expires_at - 120000) return c;
+
+  if (!refreshing) {
+    refreshing = (async () => {
+      const cur = getConfig();
+      const rt = cur.session && cur.session.refresh_token;
+      if (!rt) {
+        saveConfig({ session: null });
+        throw new SyncError('登录状态已失效，请重新登录', 'noauth');
+      }
+      try {
+        const data = await authFetch('token?grant_type=refresh_token', { refresh_token: rt });
+        storeSession(data, cur.email);
+        syncError(null);
+        return getConfig();
+      } catch (e) {
+        // refresh token 也失效了（比如换了设备、或太久没用）→ 清掉会话并让界面提示重新登录
+        saveConfig({ session: null });
+        syncError('登录已过期，请重新登录');
+        throw new SyncError('登录已过期，请重新登录', 'noauth');
+      }
+    })().finally(() => { refreshing = null; });
+  }
+  return refreshing;
 }
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const isNetErr = e => !e || e.name === 'TypeError' || /fetch|network|load failed|timed? ?out/i.test(String(e && e.message || e));
+
+/* 同步状态，给界面用 */
+export function status() {
+  const c = getConfig();
+  return { lastSync: c.lastSync || 0, lastError: c.lastError || '', signedIn: isSignedIn() };
+}
+function syncError(msg) { saveConfig({ lastError: msg || '' }); }
 
 /* ══════════════════  数据接口  ══════════════════ */
 
 async function rest(table, { method = 'GET', query = '', body, prefer } = {}) {
-  const c = await ensureToken();
-  let res;
-  try {
-    res = await fetch(`${c.url}/rest/v1/${table}${query}`, {
-      method,
-      headers: {
-        apikey: c.anonKey,
-        Authorization: 'Bearer ' + c.session.access_token,
-        'Content-Type': 'application/json',
-        Prefer: prefer || 'resolution=merge-duplicates,return=minimal',
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-  } catch (e) {
-    throw new SyncError('同步请求失败：' + (e.message || e));
+  let attempt = 0;
+  let lastNet = null;
+
+  while (attempt < 4) {
+    const c = await ensureToken(attempt > 0);
+
+    let res;
+    try {
+      res = await fetch(`${c.url}/rest/v1/${table}${query}`, {
+        method,
+        headers: {
+          apikey: c.anonKey,
+          Authorization: 'Bearer ' + c.session.access_token,
+          'Content-Type': 'application/json',
+          Prefer: prefer || 'resolution=merge-duplicates,return=minimal',
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (e) {
+      // 网络抖动（Supabase 在境外，国内网络容易断）—— 退避重试
+      lastNet = e;
+      attempt++;
+      if (attempt >= 4) break;
+      await sleep(400 * attempt * attempt);
+      continue;
+    }
+
+    // token 可能刚好过期 —— 强制刷新后重试一次
+    if ((res.status === 401 || res.status === 403) && attempt < 2 && isSignedIn()) {
+      attempt++;
+      continue;
+    }
+
+    if (!res.ok) {
+      const data = await readJson(res);
+      const m = explain(res.status, data);
+      if (res.status >= 500) {                 // 服务端临时故障也重试
+        attempt++;
+        if (attempt < 4) { await sleep(500 * attempt); continue; }
+      }
+      throw new SyncError(m + `（${table}）`);
+    }
+
+    const txt = await res.text().catch(() => '');
+    if (!txt) return null;
+    try { return JSON.parse(txt); } catch { return null; }
   }
-  if (!res.ok) {
-    const data = await readJson(res);
-    throw new SyncError(explain(res.status, data) + `（${table}）`);
-  }
-  const txt = await res.text().catch(() => '');
-  if (!txt) return null;
-  try { return JSON.parse(txt); } catch { return null; }
+
+  throw new SyncError('网络连接不稳定，同步失败：' +
+    (lastNet && lastNet.message ? lastNet.message : '请检查网络后重试'), 'network');
 }
 
 /** 分页拉全表 */
@@ -449,6 +516,7 @@ export async function sync(opts = {}) {
     lastSync: now,
   });
 
+  syncError(null);
   stage('完成');
   return stats;
 }
