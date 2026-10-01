@@ -134,8 +134,10 @@ https://<你的用户名>.github.io/lexi-read/
 ### 配置步骤
 
 1. 去 <https://supabase.com> 注册并 **New project**（地区随便选，等 1~2 分钟初始化）
-2. 左侧 **SQL Editor → New query**，把 [`docs/supabase.sql`](docs/supabase.sql) 全部粘进去 → **Run**
+2. 左侧 **SQL Editor → New query**，把建表语句粘进去 → **Run**
    （建表 + 打开行级安全 + 只允许本人读写自己的数据，重复执行也不会报错）
+   👉 语句就在 [`docs/supabase.sql`](docs/supabase.sql)；
+   **应用里的「账号与同步」区块有一个「📋 复制建表 SQL」按钮，点一下直接复制，不用去找文件。**
 3. 左侧 **Project Settings → API**，复制两个值：
    - **Project URL**，形如 `https://abcdefghijk.supabase.co`
    - **anon public** 那个长 key

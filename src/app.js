@@ -927,6 +927,69 @@ async function runSync(manual = true) {
 
 const ONBOARD_KEY = 'lexiread.onboarded';
 
+/* ── 建表 SQL：直接读仓库里的 docs/supabase.sql，不用用户去找文件 ── */
+let SQL_TEXT = '';
+let sqlLoading = null;
+function loadSql() {
+  if (SQL_TEXT) return Promise.resolve(SQL_TEXT);
+  if (!sqlLoading) {
+    sqlLoading = fetch(new URL('../docs/supabase.sql', import.meta.url))
+      .then(r => (r.ok ? r.text() : ''))
+      .then(t => { SQL_TEXT = t || ''; return SQL_TEXT; })
+      .catch(() => '');
+  }
+  return sqlLoading;
+}
+
+/** 复制到剪贴板：优先用 Clipboard API，失败就退回 execCommand */
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* 继续用回退方案 */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch { return false; }
+}
+
+/** 未配置同步时的引导卡片内容（欢迎页和设置页共用） */
+function syncSetupHtml(cfg) {
+  return `
+    <p class="lead">用一个邮箱，在 iPhone / iPad / Mac 之间同步全部内容。
+    同步用的是你自己的 Supabase 免费项目，不用信用卡，数据只有你能读写。</p>
+    <ol class="sync-steps">
+      <li>去 <a href="https://supabase.com" target="_blank" rel="noopener">supabase.com</a> 注册，新建一个项目，等它初始化完成</li>
+      <li>左侧打开 <b>SQL Editor</b> → <b>New query</b></li>
+      <li>点下面这个按钮复制建表语句，粘到 SQL Editor 里 → 点 <b>Run</b></li>
+      <li><b>Project Settings → API</b> 里复制 <b>Project URL</b> 和 <b>anon public</b>，填到下面</li>
+    </ol>
+    <div class="wc-row" style="margin-bottom:12px">
+      <button class="btn primary" data-action="copy-sql">📋 复制建表 SQL</button>
+      <button class="btn" data-action="toggle-sql">查看内容</button>
+    </div>
+    <pre class="sql-box" id="sql-box" hidden>正在读取…</pre>
+    <div class="sync-field"><span>Project URL</span>
+      <input id="sy-url" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+             placeholder="https://abcdefghijk.supabase.co" value="${esc(cfg.url)}"></div>
+    <div class="sync-field"><span>anon public key</span>
+      <input id="sy-key" type="text" autocomplete="off" spellcheck="false"
+             placeholder="eyJhbGciOi..." value="${esc(cfg.anonKey)}"></div>
+    <div class="wc-row"><button class="btn primary" data-action="sync-save-cfg">保存并继续</button></div>
+    <p class="wc-note">也可以在部署时把这两个值填进 <code>config.js</code>，
+    所有设备打开就自动配好，不用每台填一次。</p>`;
+}
+
 /** 第一屏：突出邮箱注册，说明同一邮箱全端同步 */
 function renderWelcome(errMsg) {
   const box = $('#welcome-card');
@@ -949,23 +1012,8 @@ function renderWelcome(errMsg) {
 
   if (!sync.isConfigured()) {
     box.className = 'wc-card';
-    box.innerHTML = `
-      <h2>开启跨设备同步</h2>
-      <p class="lead">用一个邮箱，在 iPhone / iPad / Mac 之间同步全部内容。
-      同步用的是你自己的 Supabase 免费项目，不用信用卡，数据只有你能读写。</p>
-      <ol class="sync-steps">
-        <li>去 <a href="https://supabase.com" target="_blank" rel="noopener">supabase.com</a> 注册并新建项目</li>
-        <li>左侧 <b>SQL Editor</b> → 执行仓库里的 <code>docs/supabase.sql</code></li>
-        <li><b>Project Settings → API</b> 里复制 Project URL 和 anon public key，填到下面</li>
-      </ol>
-      <div class="sync-field"><span>Project URL</span>
-        <input id="sy-url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://abcdefghijk.supabase.co" value="${esc(cfg.url)}"></div>
-      <div class="sync-field"><span>anon public key</span>
-        <input id="sy-key" type="text" autocomplete="off" spellcheck="false" placeholder="eyJhbGciOi..." value="${esc(cfg.anonKey)}"></div>
-      <div class="wc-row">
-        <button class="btn primary" data-action="sync-save-cfg">保存并继续</button>
-      </div>
-      <p class="wc-note">部署时把这两个值填进 <code>config.js</code>，所有设备打开就自动配好，不用每台填一次。</p>`;
+    box.innerHTML = '<h2>开启跨设备同步</h2>' + syncSetupHtml(cfg);
+    loadSql();
     return;
   }
 
@@ -1034,20 +1082,8 @@ function renderSync(errMsg) {
   const signed = sync.isSignedIn();
 
   if (!sync.isConfigured()) {
-    box.innerHTML = `
-      <p class="hint">登录后，文章、生词本、阅读进度、复习记录和排版设置会在 iPhone / iPad / Mac 之间自动同步。
-      同步用的是你自己的 Supabase 免费项目，数据只有你自己能读写。</p>
-      <ol class="sync-steps">
-        <li>去 <a href="https://supabase.com" target="_blank" rel="noopener">supabase.com</a> 注册（免费，不用信用卡）</li>
-        <li>新建一个项目，等它初始化完成</li>
-        <li>左侧 <b>SQL Editor</b> → 把 <code>docs/supabase.sql</code> 的内容粘进去 → Run</li>
-        <li>左侧 <b>Project Settings → API</b>，把 <b>Project URL</b> 和 <b>anon public</b> 两个值填到下面</li>
-      </ol>
-      <div class="sync-field"><span>Project URL</span>
-        <input id="sy-url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://abcdefghijk.supabase.co" value="${esc(cfg.url)}"></div>
-      <div class="sync-field"><span>anon public key</span>
-        <input id="sy-key" type="text" autocomplete="off" spellcheck="false" placeholder="eyJhbGciOi..." value="${esc(cfg.anonKey)}"></div>
-      <div class="sync-actions"><button class="btn primary" data-action="sync-save-cfg">保存并启用同步</button></div>`;
+    box.innerHTML = syncSetupHtml(cfg);
+    loadSql();
     setSyncBtn('', '未配置同步');
     return;
   }
@@ -1415,6 +1451,34 @@ const ACTIONS = {
     if (!confirm('要换一个 Supabase 项目吗？当前登录状态会被清除，本地数据不受影响。')) return;
     sync.saveConfig({ url: '', anonKey: '', session: null, email: '' });
     renderSync();
+  },
+  'copy-sql': async () => {
+    let sql = SQL_TEXT;
+    if (!sql) sql = await loadSql();
+    if (!sql) { toast('读取 SQL 失败，请到仓库的 docs/supabase.sql 复制', 4000); return; }
+    const ok = await copyText(sql);
+    if (ok) toast('建表 SQL 已复制，去 Supabase 的 SQL Editor 粘贴后点 Run', 4200);
+    else {
+      const box = $('#sql-box');
+      if (box) { box.hidden = false; box.textContent = sql; }
+      toast('自动复制被浏览器拦住了，请手动选中下面框里的内容复制', 5000);
+    }
+  },
+  'toggle-sql': async (btn) => {
+    const box = $('#sql-box');
+    if (!box) return;
+    if (box.hidden) {
+      if (!box.dataset.filled) {
+        const sql = await loadSql();
+        box.textContent = sql || '读取失败，请到仓库 docs/supabase.sql 查看';
+        box.dataset.filled = '1';
+      }
+      box.hidden = false;
+      if (btn) btn.textContent = '收起';
+    } else {
+      box.hidden = true;
+      if (btn) btn.textContent = '查看内容';
+    }
   },
   'sync-reload-ui': () => (S.view === 'welcome' ? renderWelcome() : renderSync()),
   'welcome-skip': () => {
