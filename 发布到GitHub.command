@@ -18,7 +18,7 @@ BOLD=$'\033[1m'; GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; DIM=$'\
 say()  { printf "%s\n" "$*"; }
 ok()   { printf "${GREEN}✓${OFF} %s\n" "$*"; }
 warn() { printf "${YELLOW}!${OFF} %s\n" "$*"; }
-die()  { printf "${RED}✗ %s${OFF}\n" "$*"; say ""; say "按回车键关闭…"; read -r _; exit 1; }
+die()  { printf "${RED}✗ %s${OFF}\n" "$*"; say ""; [ -n "${LEXI_NO_PAUSE:-}" ] || { say "按回车键关闭…"; read -r _; }; exit 1; }
 
 say ""
 say "${BOLD}精读 LexiRead · 发布到 GitHub Pages${OFF}"
@@ -86,12 +86,25 @@ fi
 # ── 5. 提交并推送 ────────────────────────────────────────────
 say "正在推送代码…"
 git add -A >/dev/null 2>&1
+
+# ── 安全检查：公开仓库里绝不能出现 API Key ──
+if git diff --cached -U0 2>/dev/null | grep -E '^\+' | grep -Eq 'sk-[A-Za-z0-9_-]{20,}'; then
+  say ""
+  warn "暂存的改动里检测到疑似 API Key（sk- 开头的长字符串）！"
+  say "  这个仓库是${BOLD}公开${OFF}的，推上去全世界都能看到。"
+  say "  · config.js 里只应放 Supabase 的 ${BOLD}anon public${OFF} key（那本来就是公开密钥，没关系）"
+  say "  · DeepSeek / OpenAI 的 Key ${BOLD}千万不要写进文件${OFF}，只填在应用界面里（存在浏览器本地）"
+  say ""
+  printf "  确定要继续推送吗？输入 ${BOLD}yes${OFF} 继续："
+  read -r go
+  [ "${go:-}" = "yes" ] || die "已取消，什么都没有推上去"
+fi
 if ! git diff --cached --quiet 2>/dev/null; then
   git -c user.name="$USER" -c user.email="$USER@users.noreply.github.com" \
       commit -q -m "更新" >/dev/null || true
 fi
 git remote remove origin >/dev/null 2>&1 || true
-git remote add origin "https://github.com/$USER/$REPO.git"
+git remote add origin "${LEXI_REMOTE_BASE:-https://github.com}/$USER/$REPO.git"
 git push -u origin main --force >/dev/null 2>&1 || git push -u origin master --force || die "推送失败"
 ok "代码已推送"
 
@@ -113,7 +126,8 @@ say "${BOLD}══════════════════════�
 say ""
 say "${DIM}首次构建通常要 1～3 分钟，我在这儿等它生效…${OFF}"
 
-for i in $(seq 1 40); do
+TRIES="${LEXI_VERIFY_TRIES:-40}"
+for i in $(seq 1 "$TRIES"); do
   code="$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 20 "$URL" 2>/dev/null || echo 000)"
   if [ "$code" = "200" ]; then
     ok "已经上线了！"
@@ -128,10 +142,10 @@ for i in $(seq 1 40); do
     say "  2. Mac：用 Safari 打开 → 文件 → 添加到程序坞"
     say "  3. 在应用里「设置 → AI 引擎」填上你自己的 DeepSeek API Key"
     say ""
-    open "$URL" 2>/dev/null || true
-    say "已经帮你用浏览器打开了。"
+    [ -n "${LEXI_NO_OPEN:-}" ] || open "$URL" 2>/dev/null || true
+    [ -n "${LEXI_NO_OPEN:-}" ] || say "已经帮你用浏览器打开了。"
     say ""
-    say "按回车键关闭…"; read -r _
+    [ -n "${LEXI_NO_PAUSE:-}" ] || { say "按回车键关闭…"; read -r _; }
     exit 0
   fi
   printf "  %s 第 %d 次…\n" "$code" "$i"
@@ -141,4 +155,4 @@ done
 warn "还没生效。去 https://github.com/$USER/$REPO/actions 看看构建进度，通常再等一会儿就好。"
 say "网址依然是： $URL"
 say ""
-say "按回车键关闭…"; read -r _
+[ -n "${LEXI_NO_PAUSE:-}" ] || { say "按回车键关闭…"; read -r _; }
