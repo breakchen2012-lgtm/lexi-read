@@ -235,14 +235,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 items = payload if isinstance(payload, list) else [payload]
                 prefer = self.headers.get('Prefer', '')
                 for it in items:
-                    it = dict(it); it['user_id'] = uid
-                    if 'resolution=merge-duplicates' in prefer or True:
-                        for i, r in enumerate(rows):
-                            if r['user_id'] == uid and r.get(pk) == it.get(pk):
-                                rows[i] = {**r, **it}
-                                break
-                        else:
-                            rows.append(it)
+                    it = dict(it)
+                    # 像真的 Supabase 一样执行 RLS：user_id 必须等于当前登录用户。
+                    # 以前这里自动补 user_id，把「客户端忘记带 user_id」的 bug 掩盖了。
+                    if it.get('user_id') != uid:
+                        return self._send(403, {
+                            'code': '42501',
+                            'message': f'new row violates row-level security policy for table "{table}"',
+                        }) or True
+                    for i, r in enumerate(rows):
+                        if r['user_id'] == uid and r.get(pk) == it.get(pk):
+                            rows[i] = {**r, **it}
+                            break
+                    else:
+                        rows.append(it)
                 return self._send(201) or True
 
             if method == 'DELETE':

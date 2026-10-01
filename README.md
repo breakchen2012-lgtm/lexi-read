@@ -166,6 +166,14 @@ https://<你的用户名>.github.io/lexi-read/
 > 关掉后注册不发邮件、立即生效，也不再受这个限制。
 > 如果之前已经建过一个「未验证」的用户，到 **Authentication → Users** 删掉它再重新注册即可。
 
+### 一个已被修掉的严重 bug：推送时漏了 `user_id`
+
+数据库的 RLS 策略是 `auth.uid() = user_id`，但客户端推送时**没有带 `user_id`**，
+于是所有写入都被拒绝（报 `new row violates row-level security policy`）。
+
+这个 bug 之所以没被测出来，是因为**模拟后端会自动补上 `user_id`，比真实环境宽松**。
+现在模拟后端改成和真 Supabase 一样严格校验 `user_id`，这类「客户端漏字段」的错误以后跑测试就能抓到。
+
 ### 同步会不会「掉线」？
 
 早期版本有一个真实的坑：同步时会并发发出多个请求，而 access token 恰好过期时，

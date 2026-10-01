@@ -116,6 +116,12 @@ async function readJson(res) {
 function explain(status, body) {
   const msg = body.error_description || body.msg || body.message || body.error || body.hint || '';
 
+  if (/row-level security|violates row-level/i.test(msg)) {
+    return '数据被数据库的安全策略拒绝了（row-level security）。\n'
+      + '通常是因为建表 SQL 没有完整执行，或者登录状态不完整。'
+      + '请到 Supabase 的 SQL Editor 里把建表语句重新执行一遍，然后退出登录再登一次。';
+  }
+
   // 邮箱未验证：不同的 GoTrue 版本会返回 400 或 401，先统一拦下来
   if (/email not confirmed|email_not_confirmed/i.test(msg)) {
     return '邮箱还没验证。去收件箱（含垃圾邮件）点确认链接；\n'
@@ -276,10 +282,12 @@ async function rest(table, { method = 'GET', query = '', body, prefer } = {}) {
       continue;
     }
 
-    // token 可能刚好过期 —— 强制刷新后重试一次
-    if ((res.status === 401 || res.status === 403) && attempt < 2 && isSignedIn()) {
-      attempt++;
-      continue;
+    // token 可能刚好过期 —— 但 403 里有一类是 RLS 拒绝（策略问题），刷新没用，别白重试
+    const looksAuth = res.status === 401;
+    if (looksAuth && attempt < 2 && isSignedIn()) { attempt++; continue; }
+    if (res.status === 403) {
+      const probe = await res.clone().text().catch(() => '');
+      if (/jwt|expired|invalid claim/i.test(probe) && attempt < 2 && isSignedIn()) { attempt++; continue; }
     }
 
     if (!res.ok) {
@@ -333,6 +341,15 @@ async function removeRows(table, ids) {
 }
 
 /* ══════════════════  合并规则  ══════════════════ */
+
+/** 当前登录用户的 uuid。推送时必须写进每一行，
+ *  否则 Supabase 的 RLS 策略 auth.uid() = user_id 会拒绝插入。 */
+async function currentUserId() {
+  const c = await ensureToken();
+  const uid = c.session && c.session.user && c.session.user.id;
+  if (!uid) throw new SyncError('登录信息不完整，请退出后重新登录', 'noauth');
+  return uid;
+}
 
 const newer = (a, b) => (a || 0) > (b || 0);
 
@@ -455,10 +472,12 @@ export async function sync(opts = {}) {
 
   const allArts = await db.all('articles');
   tr('local.articles', allArts.length);
+  const uid = await currentUserId();
   const pArts = allArts.filter(a => full || newer(a.updated, lp.articles));
   tr('push.articles', pArts.length);
   if (pArts.length) {
     await upsert('lexi_articles', pArts.map(a => ({
+      user_id: uid,
       id: a.id, title: a.title || '', word_count: a.wordCount || 0,
       progress: a.progress || 0, created: a.created || 0, last_read: a.lastRead || 0,
       updated: a.updated || now, deleted: !!a.deleted,
@@ -468,7 +487,8 @@ export async function sync(opts = {}) {
 
   const pBodies = (await db.all('bodies')).filter(b => full || newer(b.updated, lp.bodies));
   if (pBodies.length) {
-    await upsert('lexi_bodies', pBodies.map(b => ({ id: b.id, raw: b.raw || '', updated: b.updated || now })));
+    await upsert('lexi_bodies', pBodies.map(b => ({
+      user_id: uid, id: b.id, raw: b.raw || '', updated: b.updated || now })));
     stats.pushed += pBodies.length;
   }
 
@@ -478,7 +498,7 @@ export async function sync(opts = {}) {
     await upsert('lexi_vocab', pVocab.map(v => {
       const data = { ...v };
       delete data.updated;
-      return { word: v.word, data, updated: v.updated || now, deleted: !!v.deleted };
+      return { user_id: uid, word: v.word, data, updated: v.updated || now, deleted: !!v.deleted };
     }));
     stats.pushed += pVocab.length;
   }
@@ -488,7 +508,8 @@ export async function sync(opts = {}) {
     const allAica = await db.all('aica');
     pAica = allAica.filter(a => full || newer(a.t, lp.aica)).slice(-2000);
     if (pAica.length) {
-      await upsert('lexi_aica', pAica.map(a => ({ k: a.k, text: a.text || '', updated: a.t || now })));
+      await upsert('lexi_aica', pAica.map(a => ({
+        user_id: uid, k: a.k, text: a.text || '', updated: a.t || now })));
       stats.pushed += pAica.length;
     }
   }
@@ -498,7 +519,7 @@ export async function sync(opts = {}) {
   if (settingsUpdated && (full || newer(settingsUpdated, lp.settings))) {
     let data = {};
     try { data = JSON.parse(localStorage.getItem('lexiread.settings') || '{}'); } catch {}
-    await upsert('lexi_settings', [{ data, updated: settingsUpdated }]);
+    await upsert('lexi_settings', [{ user_id: uid, data, updated: settingsUpdated }]);
     stats.pushed++;
     tr('push.settings', settingsUpdated);
   }
