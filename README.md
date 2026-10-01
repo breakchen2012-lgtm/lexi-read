@@ -12,6 +12,10 @@
 |---|---|---|
 | ![](docs/shot-vocab.png) | ![](docs/shot-reader-dark.png) | ![](docs/shot-desktop.png) |
 
+导入文章时可以直接选文件，也可以把文件拖到窗口任意位置：
+
+![](docs/shot-import.png)
+
 ---
 
 ## 它有什么
