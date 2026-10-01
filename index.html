@@ -15,6 +15,7 @@
 <meta name="theme-color" content="#12141c" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f6f4ef" media="(prefers-color-scheme: light)">
 <link rel="stylesheet" href="./styles.css">
+<script src="./config.js"></script>
 </head>
 <body>
 
@@ -24,6 +25,7 @@
   <div class="tb-title" id="tb-title">精读</div>
   <div class="tb-right">
     <span class="sync-dot" id="dict-dot" title="词典状态"></span>
+    <button class="icon-btn sync-btn" id="btn-sync" hidden aria-label="同步">☁</button>
     <button class="icon-btn" id="btn-theme" aria-label="切换主题">◐</button>
     <button class="icon-btn" id="btn-settings" aria-label="设置">⚙</button>
   </div>
@@ -101,6 +103,11 @@
 
   <!-- ─────────────  设置  ───────────── -->
   <section class="view" id="view-settings">
+    <div class="set-group" id="sync-group">
+      <h2>账号与同步</h2>
+      <div id="sync-body"></div>
+    </div>
+
     <div class="set-group">
       <h2>AI 引擎</h2>
       <p class="hint">填写你自己的 API Key，费用直接算在你自己的账号上（DeepSeek 记单词这点用量约几分钱/月）。Key 只存在本机浏览器里，不会上传到任何第三方服务器。</p>

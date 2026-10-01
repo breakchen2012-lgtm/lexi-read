@@ -3,7 +3,7 @@
    离线词典：cache-first（2.9MB，装一次就够了）
    AI 接口与外部抓取：直连网络，永不缓存           */
 
-const VERSION = 'lexiread-v3';
+const VERSION = 'lexiread-v4';
 const SHELL = [
   './',
   './index.html',
@@ -19,6 +19,8 @@ const SHELL = [
   './src/ui.js',
   './src/unzip.js',
   './src/importers.js',
+  './src/sync.js',
+  './config.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/apple-touch-icon.png',

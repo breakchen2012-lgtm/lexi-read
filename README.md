@@ -16,6 +16,10 @@
 
 ## 它有什么
 
+- **文件直接导入**：EPUB 电子书、PDF 论文报告、Word（.docx）、TXT、Markdown、HTML 都能拖进来。
+  EPUB / DOCX 用浏览器内置解压自己解析，PDF 用懒加载的 pdf.js（首次用到才下载，之后离线可用）。
+- **登录 + 跨设备同步**：一个邮箱账号，在 iPhone / iPad / Mac 之间自动同步文章、生词本、阅读进度、
+  复习记录、排版设置和 AI 讲解缓存。删除也会同步，冲突按时间新的算。
 - **点词即查**：内置 36,991 条离线中英词典（来自 [ECDICT](https://github.com/skywind3000/ECDICT)，MIT），音标、词性、中文释义、词频、柯林斯星级、牛津核心、中考/高考/四六级/考研/托福/雅思/GRE 标签，全部离线可用，不花一分钱。
 - **词形还原**：点 `running` / `went` / `stopped` / `children` 自动找到原形；屈折形式还会给一个可点的「原形 xxx」跳转。
 - **AI 语境讲解**：结合这个词**在句子里**的用法解释——本句释义、为什么是这个意思、其他常用义、同类例句、词根记忆。
@@ -72,6 +76,9 @@ https://<你的用户名>.github.io/lexi-read/
 
 > 应用里所有路径都是相对路径，放在 `用户名.github.io/lexi-read/` 这种子目录下也能正常工作。
 
+> **想开同步的话**：先把 `config.js` 里的两个值填好再上传（见下面「跨设备同步」一节），
+> 这样你所有设备打开就自动配好了，不用每台再手动填一次。
+
 ### 3. 装到三个设备上
 
 | 设备 | 操作 |
@@ -92,6 +99,56 @@ https://<你的用户名>.github.io/lexi-read/
 **关于钱**：DeepSeek 现在大概是输入 0.5 元 / 百万 token、输出 8 元 / 百万 token 的量级。点一次词大约消耗 400 token，算下来**一次查询不到 1 分钱**，一个月认真读也花不完几块钱。充 10 块钱能用很久。Key 只保存在你自己的浏览器里，不会经过任何第三方服务器。
 
 > 也支持任何 OpenAI 兼容接口。比如 OpenAI 就把接口地址改成 `https://api.openai.com/v1`，模型改成 `gpt-4o-mini`；Kimi、通义、硅基流动等同理。
+
+---
+
+## 跨设备同步（可选，约 5 分钟配好）
+
+登录功能用 [Supabase](https://supabase.com) 的免费版：真邮箱密码账号 + 数据库 + 行级安全，
+不用自己写一行后端代码，也不用信用卡。
+
+### 配置步骤
+
+1. 去 <https://supabase.com> 注册并 **New project**（地区随便选，等 1~2 分钟初始化）
+2. 左侧 **SQL Editor → New query**，把 [`docs/supabase.sql`](docs/supabase.sql) 全部粘进去 → **Run**
+   （建表 + 打开行级安全 + 只允许本人读写自己的数据，重复执行也不会报错）
+3. 左侧 **Project Settings → API**，复制两个值：
+   - **Project URL**，形如 `https://abcdefghijk.supabase.co`
+   - **anon public** 那个长 key
+4. 把这两个值填进 [`config.js`](config.js)：
+
+   ```js
+   window.LEXIREAD_CONFIG = {
+     supabaseUrl:     'https://abcdefghijk.supabase.co',
+     supabaseAnonKey: 'eyJhbGciOi...',
+   };
+   ```
+
+   然后重新部署一次。这样每台设备打开就自带配置，不用挨个填。
+
+   > 不想改文件也行：直接在每个设备的「设置 → 账号与同步」里粘一次，效果一样。
+
+5. 打开应用 → **设置 → 账号与同步** → 用邮箱注册 / 登录。三部设备登同一个账号即可。
+
+> **小提示**：Supabase 默认要求验证邮箱。想省事可以在
+> **Authentication → Sign In / Providers → Email** 里关掉 **Confirm email**，注册后立即能用。
+
+### 同步哪些东西、怎么处理冲突
+
+| 内容 | 同步 | 说明 |
+|---|---|---|
+| 文章（标题、进度、阅读位置） | ✅ | 只传元数据，很轻 |
+| 文章正文 | ✅ | 单独一张表，且只在真的变了时才下载，不会每次同步都拉一遍几 MB 的书 |
+| 生词本（含收录时的原句） | ✅ | 复习进度、间隔、评分一起同步 |
+| 复习记录 / SM-2 状态 | ✅ | 在手机上复习过，Mac 上不会再让你复习一遍 |
+| 排版设置、主题、语速 | ✅ | 冲突时以时间较新的那份为准 |
+| AI 讲解缓存 | ✅ | 同步过去可以省第二遍钱 |
+| AI 模型 / API Key | ❌ | Key 只留在本机，不上传 |
+
+删除采用「墓碑」标记，所以在一台设备上删掉文章，另一台同步后也会消失，不会复活。
+
+同步是双向合并、按记录时间戳取新的，所以三部设备轮流用不会互相覆盖。
+本地改动后约 4 秒自动同步一次；打开应用、从后台切回前台也会自动同步。
 
 ---
 
@@ -123,17 +180,28 @@ lexi-read/
 │   ├── srs.js                 SM-2 间隔重复
 │   ├── tts.js                 Web Speech 朗读封装
 │   ├── text.js                文章解析：段落 / 句子 / 分词
+│   ├── importers.js           EPUB / PDF / DOCX / TXT / HTML 解析
+│   ├── unzip.js               极简 ZIP 读取（EPUB/DOCX 用，基于 DecompressionStream）
+│   ├── sync.js                账号与跨设备同步（Supabase）
 │   └── ui.js                  通用 UI 工具
+├── config.js                  部署配置（填 Supabase 地址，可留空）
 ├── data/dict.json             离线词典 36,991 条（2.9 MB，gzip 后 1.3 MB）
+├── vendor/pdfjs/              pdf.js（只在导入 PDF 时才加载）
 ├── icons/                     应用图标
 ├── scripts/
 │   ├── build_dict.py          从 ECDICT 生成精简词典
 │   ├── make_icons.py          生成图标
-│   ├── browser_test.py        无头浏览器测试运行器（含 AI mock 接口）
+│   ├── make_fixtures.py       生成 EPUB/DOCX/PDF 测试样张
+│   ├── browser_test.py        无头浏览器测试运行器（含 AI 与 Supabase mock）
 │   └── shoot.py               CDP 精确截图
 └── tests/
-    ├── smoke.html             27 项单元测试
-    ├── e2e.html               22 项端到端 UI 测试
+    ├── smoke.html             27 项单元测试（解析 / 词典 / 间隔重复 / IndexedDB）
+    ├── import.html            11 项文件导入测试（EPUB / DOCX / 两种 PDF / GBK 编码）
+    ├── migrate.html            5 项数据库 v1→v2 迁移测试
+    ├── e2e.html               28 项端到端 UI 测试（含 AI 流式、Service Worker 离线）
+    ├── stress.html             6 项大文件压力测试（60 万词的书）
+    ├── sync.html              15 项跨设备同步测试（真·两个浏览器源）
+    ├── device.html            测试用的「设备」桥（postMessage 远程指挥）
     └── seed.html              预置演示数据
 ```
 
@@ -154,7 +222,22 @@ python3 -m http.server 8791 &          # shoot.py 默认从 8791 取
 python3 scripts/shoot.py
 ```
 
-端到端测试覆盖了：导入文章 → 点词 → 离线释义 → 收藏 → 复习评分 → 排版/主题持久化 → 刷新后数据仍在，以及 **AI 流式返回、请求体正确性、缓存命中不重复扣费、Key 无效时的报错引导**。
+一共 **92 项测试**，跑法是：
+
+```bash
+for t in smoke import migrate e2e stress sync; do
+  python3 scripts/browser_test.py /tests/$t.html --wait 240
+done
+```
+
+覆盖的关键路径：
+
+- **文件导入**：EPUB 按 spine 顺序抽正文、DOCX 抽段落、PDF 两种（手写标准字体 + cupsfilter 真实排版）文本提取、GBK 编码回退、损坏文件和不支持格式的中文提示
+- **压缩包解析**：自己实现的 ZIP 读取器（STORED + DEFLATE 两种压缩方式）
+- **AI**：流式返回、请求体（模型名 / 流式开关 / 提示词含目标词与原句）、缓存命中不重复扣费、Key 无效时的报错引导
+- **跨设备同步**：用两个不同的浏览器源当两台真设备 —— 注册登录、推送、拉取、正文增量下载、双向同步、删除传播、设置冲突取新、以及两条安全断言（无凭证读不到、换账号读不到别人的）
+- **大文件**：60 万词的整本书，验证懒渲染（DOM 节点 64.9 万 → 1.1 万）
+- **数据迁移**：v1 结构升级到 v2 后文章和生词本都不丢
 
 ### 重新生成词典
 
@@ -170,7 +253,8 @@ python3 scripts/build_dict.py build/ecdict.csv data/dict.json
 ## 常见问题
 
 **为什么是网页 App，不是 App Store 里的原生 App？**
-原生 iOS 应用必须用 Xcode 打包、用 Apple 开发者账号签名（免费账号签的应用 7 天就过期，要重装）。这台 Mac 上只装了 Command Line Tools，没有 Xcode。而 PWA 一次做好、三端通用、可以离线、能装到主屏全屏运行，还不用等审核。代价是没有「分享菜单里直接调用」这类系统级集成。
+原生 iOS 应用必须用 Xcode 打包、用 Apple 开发者账号签名（免费账号签的应用 7 天就过期，要重装）。这台 Mac 上只装了 Command Line Tools，没有 Xcode。而 PWA 一次做好、三端通用、可以离线、能装到主屏全屏运行，还不用等审核。代价是没有「分享菜单里直接调用」这类系统级集成（不过文件可以直接在应用里选，iOS 上会读「文件」App 和 iCloud 云盘）。
+另外 iOS 的 PWA 不支持把 PDF 从别的 App「分享到」它，得先在应用里点导入再选文件。
 
 **断网还能用吗？**
 可以。第一次用某个功能时会被 Service Worker 缓存下来，之后离线也能打开、查词、复习。只有 AI 讲解和「从网址导入」需要联网。
@@ -179,7 +263,12 @@ python3 scripts/build_dict.py build/ecdict.csv data/dict.json
 文章、生词、阅读进度、AI 结果全部存在你设备本机的 IndexedDB 里，没有任何后端。API Key 存在 localStorage，请求直接从你的浏览器发往你填的那个接口地址。唯一的例外是「从网址导入」，它会经过 `r.jina.ai` 去抓取网页正文。
 
 **换设备怎么同步？**
-设置 → 导出全部数据，得到一个 JSON；在新设备上「导入数据」。没有自动云同步（那需要服务器）。
+配好 Supabase（见上面「跨设备同步」）之后登录同一个账号就自动同步了。
+不想用云也可以：设置 → 导出全部数据 → 在新设备「导入数据」。
+
+**同步要花钱吗？**
+不要。Supabase 免费版给 500 MB 数据库和无限账号，纯文字的文章和生词本远远用不完。
+数据只有你自己能读写（脚本里开了行级安全，anon key 是公开密钥，放在前端是安全的）。
 
 **能用来学别的语言吗？**
 词典是英中的，TTS 也默认英语，所以主要是英语。但 AI 讲解的提示词在 `src/ai.js` 里，改成别的语言对也不难。

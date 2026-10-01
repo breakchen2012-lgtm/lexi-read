@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>LexiRead sync test（两台真·独立设备）</title>
+<script>
+  window.__errs = [];
+  window.__posted = false;
+  addEventListener('error', e => window.__errs.push('error: ' + (e.message || e.error)));
+  addEventListener('unhandledrejection', e => window.__errs.push('reject: ' + ((e.reason && e.reason.message) || e.reason)));
+  setTimeout(() => {
+    if (window.__posted) return;
+    fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results: window.__partial || [], errors: window.__errs.concat(['watchdog: sync 未跑完']) }) }).catch(() => {});
+  }, 300000);
+</script>
+<style>
+  body{ font: 14px/1.7 ui-monospace, monospace; margin:0; padding:10px; }
+  .pass{ color:#0a0 } .fail{ color:#c00; font-weight:700 }
+  .rig{ display:flex; gap:10px; margin-top:8px }
+  iframe{ border:1px solid #ccc; background:#fff }
+  h4{ margin:4px 0; font-size:12px; color:#666 }
+</style>
+</head>
+<body>
+<div id="out">running…</div>
+<div class="rig">
+  <div><h4>设备 A · 127.0.0.1</h4><iframe id="devA" width="380" height="660"></iframe></div>
+  <div><h4>设备 B · 另一个端口（独立存储）</h4><iframe id="devB" width="380" height="660"></iframe></div>
+</div>
+<script type="module">
+const results = [];
+window.__partial = results;
+let posting = false;
+function flush() {
+  if (posting) return; posting = true;
+  setTimeout(() => {
+    posting = false;
+    fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results, errors: window.__errs || [], partial: true }) }).catch(() => {});
+  }, 30);
+}
+const rec = (ok, name, info = '') => { results.push([!!ok, name, info]); flush(); };
+
+const PORT = location.port;
+const PORT_B = String(+PORT + 1);   // 第二台设备用另一个端口，存储完全隔离
+const SB = `http://127.0.0.1:${PORT}/__sb`;
+const A = document.getElementById('devA');
+const B = document.getElementById('devB');
+const EMAIL = 'reader@example.com';
+const PASS = 'lexiread2026';
+
+/* ── 通过 postMessage 远程指挥一台「设备」 ── */
+let seq = 0;
+const pending = new Map();
+addEventListener('message', e => {
+  const m = e.data;
+  if (!m || m.__lexi !== 'res') return;
+  const p = pending.get(m.id);
+  if (!p) return;
+  pending.delete(m.id);
+  m.ok ? p.res(m.value) : p.rej(new Error(m.error));
+});
+function rpc(frame, msg, timeout = 45000) {
+  return new Promise((res, rej) => {
+    const id = ++seq;
+    pending.set(id, { res, rej });
+    setTimeout(() => { if (pending.has(id)) { pending.delete(id); rej(new Error('RPC 超时：' + JSON.stringify(msg).slice(0, 70))); } }, timeout);
+    frame.contentWindow.postMessage({ __lexi: 'cmd', id, ...msg }, '*');
+  });
+}
+const ev = (frame, code, t) => rpc(frame, { cmd: 'eval', code }, t);
+const ready = (frame, t) => rpc(frame, { cmd: 'ready', timeout: t || 30000 }, (t || 30000) + 5000);
+const reload = (frame, hash) => rpc(frame, { cmd: 'reload', hash }, 50000);
+const evalAsync = (frame, body, t) => ev(frame, `(async () => { ${body} })()`, t);
+
+function bootDevice(frame, origin) {
+  return new Promise((res, rej) => {
+    const h = e => {
+      const m = e.data;
+      if (!m || m.__lexi !== 'ready') return;
+      if (m.origin !== origin) return;            // 两台设备都会广播 ready，必须按来源区分
+      removeEventListener('message', h);
+      res();
+    };
+    addEventListener('message', h);
+    frame.src = `${origin}/tests/device.html`;
+    setTimeout(() => { removeEventListener('message', h); rej(new Error('设备起不来 ' + origin)); }, 60000);
+  });
+}
+
+try { await fetch('/__sb-reset'); } catch {}
+
+/* ── 0. 两台设备 ── */
+try {
+  // 顺序启动，避免两台设备的握手互相干扰
+  await bootDevice(A, `http://127.0.0.1:${PORT}`);
+  await ready(A);
+  await rpc(A, { cmd: 'setSync', value: { url: SB, anonKey: 'test-anon-key', autoSync: false } });
+  await bootDevice(B, `http://127.0.0.1:${PORT_B}`);
+  await ready(B);
+  await rpc(B, { cmd: 'setSync', value: { url: SB, anonKey: 'test-anon-key', autoSync: false } });
+  const mods = await Promise.all([ev(A, '!!window.__lexisync'), ev(B, '!!window.__lexisync')]);
+  if (!mods[0] || !mods[1]) throw new Error('同步模块没加载：' + JSON.stringify(mods));
+  rec(true, '两台独立「设备」都起来了（存储隔离，走 postMessage 桥接）');
+} catch (e) { rec(false, '两台独立「设备」都起来了', e.message); }
+
+/* ── 1. 注册 / 登录 ── */
+try {
+  const r = await evalAsync(A, `const r = await __lexisync.signUp('${EMAIL}','${PASS}');
+    return { ok:r.ok, need:r.needConfirm, signed:__lexisync.isSignedIn() };`);
+  rec(r.ok && !r.need && r.signed, '设备 A 注册并登录成功', JSON.stringify(r));
+} catch (e) { rec(false, '设备 A 注册并登录成功', e.message); }
+
+try {
+  await evalAsync(A, `await __lexisync.signIn('${EMAIL}','nope-nope'); return 1;`);
+  rec(false, '错误密码会被拒绝', '居然登录成功了');
+} catch (e) { rec(/密码不对|Invalid login/i.test(e.message), '错误密码会被拒绝', e.message); }
+
+/* ── 2. A 造内容并上传 ── */
+try {
+  await evalAsync(A, `
+    document.querySelector('[data-action="new-article"]').click();
+    await new Promise(r=>setTimeout(r,300));
+    document.querySelector('#na-text').value =
+      'Syncing Across Devices\\n\\nA sentence written on the phone should appear on the laptop. '
+      + 'Progress, vocabulary and settings all travel through the cloud.';
+    document.querySelector('#na-title').value = 'Syncing Across Devices';
+    document.querySelector('[data-action="na-save"]').click();
+    await new Promise(r=>setTimeout(r,900));
+    document.querySelector('.w[data-w="vocabulary"]').click();
+    await new Promise(r=>setTimeout(r,400));
+    document.querySelector('[data-action="save"]').click();
+    await new Promise(r=>setTimeout(r,400));
+    return 1;`);
+  const st = await evalAsync(A, `return await __lexisync.sync();`);
+  rec(st.pushed >= 3, '设备 A 把文章 + 正文 + 生词推上云端', JSON.stringify(st));
+} catch (e) { rec(false, '设备 A 把文章 + 正文 + 生词推上云端', e.message); }
+
+/* ── 3. B 登录后拿到全部数据 ── */
+try {
+  await evalAsync(B, `await __lexisync.signIn('${EMAIL}','${PASS}'); return 1;`);
+  const st = await evalAsync(B, `return await __lexisync.sync();`);
+  await reload(B);
+  const info = await ev(B, `JSON.stringify({
+    cards: document.querySelectorAll('#article-list .card').length,
+    title: (document.querySelector('#article-list .card-title')||{}).textContent || ''
+  })`);
+  const o = JSON.parse(info);
+  rec(o.cards === 1 && /Syncing Across Devices/.test(o.title),
+    '设备 B 登录后自动拿到了文章', info + ' pulled=' + st.pulled);
+} catch (e) { rec(false, '设备 B 登录后自动拿到了文章', e.message); }
+
+try {
+  const info = await evalAsync(B, `
+    document.querySelector('#article-list .card [data-open]').click();
+    await new Promise(r=>setTimeout(r,900));
+    const body = document.querySelector('#reader-body').textContent;
+    document.querySelector('#tabbar .tab[data-tab="vocab"]').click();
+    await new Promise(r=>setTimeout(r,400));
+    const el = document.querySelector('#vocab-list .card');
+    return JSON.stringify({ hasBody: /appear on the laptop/.test(body), hasWord: /vocabulary/.test(el ? el.textContent : '') });`);
+  const o = JSON.parse(info);
+  rec(o.hasBody && o.hasWord, '设备 B 拿到了正文和生词（含原句语境）', info);
+} catch (e) { rec(false, '设备 B 拿到了正文和生词（含原句语境）', e.message); }
+
+/* ── 4. 正文没变时不重复下载 ── */
+try {
+  const before = await (await fetch('/__sb-stats')).json();
+  await evalAsync(B, `return await __lexisync.sync();`);
+  const after = await (await fetch('/__sb-stats')).json();
+  rec(after.body_rows_served === before.body_rows_served,
+    '正文没变时不重复下载（只传 id+updated 比对）',
+    `${before.body_rows_served} → ${after.body_rows_served}`);
+} catch (e) { rec(false, '正文没变时不重复下载', e.message); }
+
+/* ── 5. B 新增生词，A 收到（双向） ── */
+try {
+  await evalAsync(B, `
+    document.querySelector('#tabbar .tab[data-tab="library"]').click();
+    await new Promise(r=>setTimeout(r,250));
+    document.querySelector('#article-list .card [data-open]').click();
+    await new Promise(r=>setTimeout(r,900));
+    document.querySelector('.w[data-w="progress"]').click();
+    await new Promise(r=>setTimeout(r,400));
+    document.querySelector('[data-action="save"]').click();
+    await new Promise(r=>setTimeout(r,400));
+    return 1;`);
+  const st = await evalAsync(B, `return await __lexisync.sync();`);
+  rec(st.pushed >= 1, '设备 B 的改动推上云端', JSON.stringify(st));
+} catch (e) { rec(false, '设备 B 的改动推上云端', e.message); }
+
+try {
+  const stA = await evalAsync(A, `return await __lexisync.sync();`);
+  await reload(A);
+  const words = await evalAsync(A, `
+    document.querySelector('#tabbar .tab[data-tab="vocab"]').click();
+    await new Promise(r=>setTimeout(r,400));
+    return Array.from(document.querySelectorAll('#vocab-list .card .card-title')).map(e=>e.textContent).join(' ');`);
+  const dump = await (await fetch('/__sb-dump')).json();
+  const cloudVocab = (dump.tables.lexi_vocab || []).map(r => r.word + '@' + r.updated + (r.deleted ? ':del' : '')).join(' | ');
+  const aStore = await ev(A, `(async()=>{const d=await new Promise(r=>{const q=indexedDB.open('lexiread');q.onsuccess=()=>r(q.result)});
+    const t=d.transaction('vocab').objectStore('vocab').getAll();
+    return await new Promise(r=>{t.onsuccess=()=>r(t.result.map(v=>v.word+'@'+v.updated+(v.deleted?':del':'')).join(' | '))});})()`);
+  rec(/vocabulary/.test(words) && /progress/.test(words),
+    '设备 A 收到了设备 B 新增的生词（双向同步）',
+    `A库=[${aStore}] 云端=[${cloudVocab}] trace=${JSON.stringify(stA.trace)}`);
+} catch (e) { rec(false, '设备 A 收到了设备 B 新增的生词（双向同步）', e.message); }
+
+/* ── 6. 删除传播 ── */
+try {
+  const left = await evalAsync(A, `
+    document.querySelector('#tabbar .tab[data-tab="library"]').click();
+    await new Promise(r=>setTimeout(r,250));
+    window.confirm = () => true;
+    document.querySelector('#article-list .card-x').click();
+    await new Promise(r=>setTimeout(r,400));
+    return document.querySelectorAll('#article-list .card').length;`);
+  const aAfter = await ev(A, `(async()=>{const d=await new Promise(r=>{const q=indexedDB.open('lexiread');q.onsuccess=()=>r(q.result)});
+    const t=d.transaction('articles').objectStore('articles').getAll();
+    return await new Promise(r=>{t.onsuccess=()=>r(JSON.stringify(t.result))});})()`);
+  const stDel = await evalAsync(A, `return await __lexisync.sync();`);
+  const cloudAfter = await (await fetch('/__sb-dump')).json();
+  rec(left === 0, '设备 A 删除文章并同步',
+    `剩余=${left} A本地=${aAfter} 云端=${JSON.stringify(cloudAfter.tables.lexi_articles)} trace=${JSON.stringify(stDel.trace)}`);
+} catch (e) { rec(false, '设备 A 删除文章并同步', e.message); }
+
+try {
+  const stB = await evalAsync(B, `return await __lexisync.sync();`);
+  await reload(B);
+  const cards = await ev(B, `document.querySelectorAll('#article-list .card').length`);
+  const dump = await (await fetch('/__sb-dump')).json();
+  const cloudArts = (dump.tables.lexi_articles || []).map(r => r.id + ' del=' + r.deleted + ' up=' + r.updated).join(' | ');
+  const bStore = await ev(B, `(async()=>{const d=await new Promise(r=>{const q=indexedDB.open('lexiread');q.onsuccess=()=>r(q.result)});
+    const t=d.transaction('articles').objectStore('articles').getAll();
+    return await new Promise(r=>{t.onsuccess=()=>r(t.result.map(v=>v.id+' del='+!!v.deleted+' up='+v.updated).join(' | '))});})()`);
+  rec(cards === 0, '设备 B 同步后文章也消失（删除会传播）',
+    `cards=${cards} B库=[${bStore}] 云端=[${cloudArts}] Btrace=${JSON.stringify(stB.trace)}`);
+} catch (e) { rec(false, '设备 B 同步后文章也消失（删除会传播）', e.message); }
+
+/* ── 7. 冲突：时间新的赢 ── */
+try {
+  const stA1 = await evalAsync(A, `localStorage.setItem('lexiread.settings.updated', String(Date.now()-60000));
+    localStorage.setItem('lexiread.settings', JSON.stringify({fontSize:22, theme:'light'}));
+    return await __lexisync.sync({full:true});`);
+  rec(true, 'A 第一次冲突同步 trace', JSON.stringify(stA1.trace));
+  await evalAsync(B, `localStorage.setItem('lexiread.settings.updated', String(Date.now()));
+    localStorage.setItem('lexiread.settings', JSON.stringify({fontSize:28, theme:'dark'}));
+    return await __lexisync.sync({full:true});`);
+  const stA3 = await evalAsync(A, `return await __lexisync.sync();`);
+  const got = await ev(A, `localStorage.getItem('lexiread.settings')`);
+  const o = JSON.parse(got || '{}');
+  const dump = await (await fetch('/__sb-dump')).json();
+  const cloudSet = JSON.stringify((dump.tables.lexi_settings || []).map(r => ({ u: r.updated, d: r.data })));
+  const rl = (dump.reqlog || []).filter(x => /settings/.test(x)).join(' ; ');
+  rec(o.fontSize === 28 && o.theme === 'dark',
+    '设置冲突以时间较新的为准（28/dark 覆盖 22/light）',
+    `A=${got} 云端=${cloudSet} 请求=${rl} trace=${JSON.stringify(stA3.trace)}`);
+} catch (e) { rec(false, '设置冲突以时间较新的为准', e.message); }
+
+/* ── 8. RLS：没凭证 / 换账号都读不到 ── */
+try {
+  const r = await fetch(`${SB}/rest/v1/lexi_articles?select=*`, { headers: { apikey: 'test-anon-key' } });
+  rec(r.status === 401, '没有登录凭证读不到任何云端数据（行级安全）', 'HTTP ' + r.status);
+} catch (e) { rec(false, '没有登录凭证读不到任何云端数据', e.message); }
+
+try {
+  const other = await fetch(`${SB}/auth/v1/signup`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', apikey: 'test-anon-key' },
+    body: JSON.stringify({ email: 'stranger@example.com', password: 'stranger123' }),
+  }).then(r => r.json());
+  const rows = await fetch(`${SB}/rest/v1/lexi_articles?select=*`, {
+    headers: { apikey: 'test-anon-key', Authorization: 'Bearer ' + other.access_token },
+  }).then(r => r.json());
+  rec(Array.isArray(rows) && rows.length === 0, '换一个账号登录看不到别人的数据（RLS 隔离）',
+    JSON.stringify(rows).slice(0, 60));
+} catch (e) { rec(false, '换一个账号登录看不到别人的数据', e.message); }
+
+const pass = results.filter(r => r[0]).length;
+document.getElementById('out').innerHTML = `<h3>${pass}/${results.length} 通过</h3>` +
+  results.map(([ok, n, i]) => `<div class="${ok ? 'pass' : 'fail'}">${ok ? '✓' : '✗'} ${n}${i ? ' <span style="color:#888">→ ' + String(i).replace(/</g, '&lt;') + '</span>' : ''}</div>`).join('');
+window.__posted = true;
+try {
+  await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ results, errors: window.__errs || [] }) });
+} catch {}
+</script>
+</body>
+</html>

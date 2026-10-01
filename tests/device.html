@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>LexiRead 设备桥</title>
+<style>html,body{margin:0;background:#eef}iframe{border:0;display:block}</style>
+</head>
+<body>
+<iframe id="app" src="/index.html?nosw=1" width="380" height="660"></iframe>
+<script>
+/* 测试用「设备」：本页和 App 同源，所以能操作它；
+   再通过 postMessage 让跨源的父亲页面也能远程指挥这台"设备"。 */
+const frame = document.getElementById('app');
+const W = () => frame.contentWindow, D = () => frame.contentDocument;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const loadEvt = () => new Promise(r => frame.addEventListener('load', r, { once: true }));
+
+async function waitReady(ms = 30000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    try { if (D().body.dataset.ready === '1') return true; } catch {}
+    await sleep(80);
+  }
+  let diag = '';
+  try {
+    diag = JSON.stringify({
+      href: W().location.href, title: D().title, rs: D().readyState,
+      hasSync: !!W().__lexisync, dy: W().__lexisync ? 'y' : 'n',
+      ready: D().body ? D().body.dataset.ready : null,
+      len: D().body ? D().body.innerHTML.length : -1,
+      err: W().__err || null,
+      pre: W().__pre || null,
+      moduleRan: W().__module || null,
+      ph: (D().querySelector('#article-list') || {}).textContent ? D().querySelector('#article-list').textContent.slice(0, 16) : '',
+    });
+  } catch (e) { diag = 'diag失败 ' + e.message; }
+  throw new Error('设备未就绪 ' + diag);
+}
+
+window.addEventListener('message', async e => {
+  const m = e.data;
+  if (!m || m.__lexi !== 'cmd') return;
+  const reply = p => { try { e.source.postMessage({ __lexi: 'res', id: m.id, ...p }, '*'); } catch {} };
+  try {
+    let out = null;
+    if (m.cmd === 'eval') {
+      out = W().eval(m.code);
+      if (out && typeof out.then === 'function') out = await out;
+    } else if (m.cmd === 'setSync') {
+      W().localStorage.setItem('lexiread.sync', JSON.stringify(m.value));
+      out = true;
+    } else if (m.cmd === 'reload') {
+      frame.src = '/index.html?nosw=1' + (m.hash || '');
+      await loadEvt();
+      await waitReady();
+      out = true;
+    } else if (m.cmd === 'ready') {
+      try {
+        await waitReady(m.timeout || 30000);
+      } catch (e) {
+        reply({ ok: false, error: e.message });
+        return;
+      }
+      out = true;
+    }
+    reply({ ok: true, value: out === undefined ? null : out });
+  } catch (err) {
+    reply({ ok: false, error: String((err && err.message) || err) });
+  }
+});
+
+(async () => {
+  await loadEvt();
+  await waitReady().catch(() => {});
+  try { parent.postMessage({ __lexi: 'ready', origin: location.origin }, '*'); } catch {}
+})();
+</script>
+</body>
+</html>

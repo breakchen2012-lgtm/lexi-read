@@ -59,6 +59,23 @@ function run(store, mode, fn) {
   }));
 }
 
+/** 在同一个事务里「读—改—写」，避免把过期的内存副本覆盖到新数据上 */
+export function update(store, key, patch) {
+  return open().then(db => new Promise((res, rej) => {
+    const t = db.transaction(store, 'readwrite');
+    const s = t.objectStore(store);
+    const g = s.get(key);
+    g.onsuccess = () => {
+      let next;
+      try { next = patch(g.result); } catch { next = null; }
+      if (next) s.put(next);
+    };
+    t.oncomplete = () => res(true);
+    t.onerror = () => rej(t.error);
+    t.onabort = () => rej(t.error);
+  }));
+}
+
 export const get = (store, key) => run(store, 'readonly', s => s.get(key));
 export const put = (store, val) => run(store, 'readwrite', s => s.put(val));
 export const del = (store, key) => run(store, 'readwrite', s => s.delete(key));

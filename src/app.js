@@ -7,6 +7,7 @@ import * as tts from './tts.js';
 import * as srs from './srs.js';
 import { parseArticle, tokensOf } from './text.js';
 import { importFile, ACCEPT, FORMATS } from './importers.js';
+import * as sync from './sync.js';
 import {
   $, $$, esc, toast, renderRich, openModal, closeModal, isModalOpen,
   highlightWord, clozeSentence, fmtDate, readingTime, splitSenses, TAG_LABEL,
@@ -25,7 +26,9 @@ let settings = (() => {
 })();
 function saveSettings() {
   localStorage.setItem(SET_KEY, JSON.stringify(settings));
+  localStorage.setItem(SET_KEY + '.updated', String(Date.now()));
   applySettings();
+  scheduleSync();
 }
 
 function applySettings() {
@@ -96,7 +99,7 @@ function setView(name, opts = {}) {
 
   if (name === 'library') renderLibrary();
   if (name === 'vocab') renderVocab();
-  if (name === 'settings') renderSettings();
+  if (name === 'settings') { renderSettings(); renderSync(); }
   if (name === 'review') { /* 由 startReview 驱动 */ }
   if (!opts.keepScroll) window.scrollTo({ top: 0 });
   closePanel();
@@ -173,7 +176,8 @@ async function openArticle(id) {
 
   S.cur = { article, parsed };
   article.lastRead = Date.now();
-  db.put('articles', { ...article }).catch(() => {});   // 只写元数据，很轻
+  article.updated = touch();
+  persistArticle(article);                              // 只写元数据，很轻
 
   renderReader();
   setView('reader');
@@ -298,7 +302,9 @@ function onScroll() {
     const h = document.documentElement.scrollHeight - window.innerHeight;
     const ratio = h > 0 ? Math.min(1, Math.max(0, window.scrollY / h)) : 0;
     S.cur.article.progress = ratio;
-    db.put('articles', { ...S.cur.article }).catch(() => {});
+    S.cur.article.updated = touch();
+    persistArticle(S.cur.article);
+    scheduleSync();
   }, 350);
 }
 
@@ -618,7 +624,9 @@ async function gradeReview(g) {
   if (!R.cur) return;
   srs.apply(R.cur, g);
   R.cur.last = Date.now();
+  R.cur.updated = touch();
   try { await db.put('vocab', { ...R.cur }); } catch {}
+  scheduleSync();
   S.vocab.set(R.cur.word, R.cur);
   R.done++;
   // 忘记的词重新排到队尾
@@ -638,22 +646,202 @@ async function saveWord(base, rec, surface, sid) {
     sentence,
     articleId: S.cur?.article.id || '',
     articleTitle: S.cur?.article.title || '',
+    updated: touch(),
   });
   S.vocab.set(base, card);
   try { await db.put('vocab', card); } catch {}
+  scheduleSync();
   $$(`.w[data-w="${CSS.escape(base)}"]`).forEach(el => el.classList.add('saved'));
   toast('已加入生词本：' + base);
   return card;
 }
 
 async function unsaveWord(base) {
+  const old = S.vocab.get(base) || {};
   S.vocab.delete(base);
-  try { await db.del('vocab', base); } catch {}
+  try {
+    await db.put('vocab', { ...old, word: base, deleted: true, updated: touch() });
+  } catch {}
   $$(`.w[data-w="${CSS.escape(base)}"]`).forEach(el => el.classList.remove('saved'));
+  scheduleSync();
   toast('已从生词本移除：' + base);
 }
 
 /* ══════════════════════════  设置页  ══════════════════════════ */
+
+/* ══════════════════════════  账号与同步  ══════════════════════════ */
+
+// 测试与调试用的钩子（同源才拿得到，不影响正常使用）
+window.__lexisync = sync;
+
+let syncTimer = null;
+let syncBusy = false;
+
+/** 本地有改动后延迟同步，避免连续操作时反复请求 */
+function scheduleSync(delay = 4000) {
+  if (!sync.isSignedIn() || !sync.getConfig().autoSync) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => { runSync(false); }, delay);
+}
+
+function setSyncBtn(state, title) {
+  const b = $('#btn-sync');
+  if (!b) return;
+  b.hidden = !sync.isConfigured();
+  b.className = 'icon-btn sync-btn' + (state ? ' ' + state : '');
+  b.title = title || '';
+  if (state === 'on') b.textContent = '☁';
+  else if (state === 'busy') b.textContent = '↻';
+  else if (state === 'err') b.textContent = '⚠';
+  else b.textContent = '☁';
+}
+
+function fmtAgo(ts) {
+  if (!ts) return '从未同步';
+  const d = Date.now() - ts;
+  if (d < 60000) return '刚刚同步';
+  if (d < 3600000) return Math.round(d / 60000) + ' 分钟前同步';
+  if (d < 86400000) return Math.round(d / 3600000) + ' 小时前同步';
+  return fmtDate(ts) + ' 同步';
+}
+
+async function runSync(manual = true) {
+  if (syncBusy) return;
+  if (!sync.isSignedIn()) {
+    if (manual) { toast('请先在「设置 → 账号与同步」登录'); setView('settings'); }
+    return;
+  }
+  syncBusy = true;
+  setSyncBtn('busy', '正在同步…');
+  const hadArticle = S.cur?.article.id;
+  try {
+    const st = await sync.sync({
+      onStage: msg => setSyncBtn('busy', msg),
+      full: manual && false,
+    });
+    await reloadAll();
+    if (S.cur) {
+      const fresh = S.articles.find(a => a.id === S.cur.article.id);
+      if (fresh) S.cur.article = fresh;
+    }
+    renderLibrary();
+    if (S.view === 'vocab') renderVocab();
+    renderSync();
+    setSyncBtn('on', fmtAgo(sync.lastSyncAt()));
+
+    // 当前在读的文章若被别的设备删了，就退回书架
+    if (hadArticle && !S.articles.some(a => a.id === hadArticle)) {
+      S.cur = null;
+      setView('library');
+      toast('这篇文章已在其它设备上删除');
+    } else if (manual) {
+      const bits = [];
+      if (st.pulled) bits.push(`拉取 ${st.pulled} 项`);
+      if (st.pushed) bits.push(`上传 ${st.pushed} 项`);
+      if (st.removed) bits.push(`删除 ${st.removed} 项`);
+      toast(bits.length ? '同步完成：' + bits.join('、') : '已经是最新的了');
+    }
+  } catch (e) {
+    setSyncBtn('err', e.message);
+    if (manual) toast('同步失败：' + e.message, 5000);
+    renderSync(e.message);
+  } finally {
+    syncBusy = false;
+  }
+}
+
+async function doAuth(mode) {
+  const email = ($('#sy-email')?.value || '').trim();
+  const pass = $('#sy-pass')?.value || '';
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { renderSync('邮箱格式不对'); return; }
+  if (pass.length < 6) { renderSync('密码至少要 6 位'); return; }
+  const btns = $$('#sync-body .btn');
+  btns.forEach(b => { b.disabled = true; });
+  const old = $('#sync-body').innerHTML;
+  try {
+    if (mode === 'up') {
+      const r = await sync.signUp(email, pass);
+      if (r.needConfirm) {
+        $('#sync-body').innerHTML = `<div class="na-status is-ok">✓ 注册成功！去 <b>${esc(email)}</b> 收一封确认邮件，
+          点里面的链接后再回来登录。<br><span style="color:var(--fg-dim)">（如果不想验证邮箱：Supabase 控制台 →
+          Authentication → Sign In / Providers → Email → 关掉 Confirm email，以后注册就立即生效）</span></div>
+          <div class="sync-actions"><button class="btn" data-action="sync-reload-ui">我已确认，去登录</button></div>`;
+        return;
+      }
+      toast('注册成功，已登录');
+    } else {
+      await sync.signIn(email, pass);
+      toast('登录成功');
+    }
+    renderSync();
+    runSync(true);
+  } catch (e) {
+    $('#sync-body').innerHTML = old;
+    renderSync(e.message);
+  }
+}
+
+function renderSync(errMsg) {
+  const box = $('#sync-body');
+  if (!box) return;
+  const cfg = sync.getConfig();
+  const signed = sync.isSignedIn();
+
+  if (!sync.isConfigured()) {
+    box.innerHTML = `
+      <p class="hint">登录后，文章、生词本、阅读进度、复习记录和排版设置会在 iPhone / iPad / Mac 之间自动同步。
+      同步用的是你自己的 Supabase 免费项目，数据只有你自己能读写。</p>
+      <ol class="sync-steps">
+        <li>去 <a href="https://supabase.com" target="_blank" rel="noopener">supabase.com</a> 注册（免费，不用信用卡）</li>
+        <li>新建一个项目，等它初始化完成</li>
+        <li>左侧 <b>SQL Editor</b> → 把 <code>docs/supabase.sql</code> 的内容粘进去 → Run</li>
+        <li>左侧 <b>Project Settings → API</b>，把 <b>Project URL</b> 和 <b>anon public</b> 两个值填到下面</li>
+      </ol>
+      <div class="sync-field"><span>Project URL</span>
+        <input id="sy-url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://abcdefghijk.supabase.co" value="${esc(cfg.url)}"></div>
+      <div class="sync-field"><span>anon public key</span>
+        <input id="sy-key" type="text" autocomplete="off" spellcheck="false" placeholder="eyJhbGciOi..." value="${esc(cfg.anonKey)}"></div>
+      <div class="sync-actions"><button class="btn primary" data-action="sync-save-cfg">保存并启用同步</button></div>`;
+    setSyncBtn('', '未配置同步');
+    return;
+  }
+
+  if (!signed) {
+    box.innerHTML = `
+      <p class="hint">同步服务已就绪，登录你的账号即可在三端之间同步。</p>
+      <div class="sync-field"><span>邮箱</span>
+        <input id="sy-email" type="text" inputmode="email" autocomplete="username" spellcheck="false" placeholder="you@example.com" value="${esc(cfg.email)}"></div>
+      <div class="sync-field"><span>密码（至少 6 位）</span>
+        <input id="sy-pass" type="password" autocomplete="current-password" placeholder="••••••"></div>
+      ${errMsg ? `<div class="err-box" style="margin-bottom:12px">${esc(errMsg)}</div>` : ''}
+      <div class="sync-actions">
+        <button class="btn primary" data-action="sync-signin">登录</button>
+        <button class="btn" data-action="sync-signup">注册新账号</button>
+        <button class="btn" data-action="sync-reset-cfg">换一个项目</button>
+      </div>`;
+    setSyncBtn('', '未登录');
+    return;
+  }
+
+  const email = sync.currentEmail();
+  box.innerHTML = `
+    <div class="sync-state">
+      <div class="sync-avatar">${esc((email[0] || '?').toUpperCase())}</div>
+      <div class="who"><b>${esc(email)}</b><span style="color:var(--fg-dim)">${esc(fmtAgo(sync.lastSyncAt()))}</span></div>
+    </div>
+    ${errMsg ? `<div class="err-box" style="margin-bottom:12px">${esc(errMsg)}</div>` : ''}
+    <label class="field" style="border:none;padding:4px 0 10px">
+      <span style="width:auto;flex:1">打开应用时自动同步</span>
+      <input id="sy-auto" type="checkbox" ${cfg.autoSync ? 'checked' : ''}>
+    </label>
+    <p class="hint" style="margin-bottom:12px">同步是双向的：本地改动会传给云端，云端的改动也会合并回本机。
+    冲突时以时间较新的那份为准，所以三部设备轮流用不会互相覆盖。</p>
+    <div class="sync-actions">
+      <button class="btn primary" data-action="sync-now">立即同步</button>
+      <button class="btn" data-action="sync-signout">退出登录</button>
+    </div>`;
+  setSyncBtn('on', fmtAgo(sync.lastSyncAt()));
+}
 
 function renderSettings() {
   const c = ai.getConfig();
@@ -674,6 +862,7 @@ function renderSettings() {
   $('#set-rate-v').textContent = (settings.ttsRate / 100).toFixed(2) + '×';
 
   fillVoices();
+  renderSync();
   db.usage().then(u => {
     if (!u) { $('#storage-hint').textContent = '数据全部保存在本机浏览器中。'; return; }
     $('#storage-hint').textContent =
@@ -813,11 +1002,13 @@ async function saveNewArticle() {
     lastRead: Date.now(),
     progress: 0,
     wordCount: parsed.words,
+    updated: touch(),
   };
   S.articles.push(art);
   parsedCache.set(art.id, parsed);
   await db.put('articles', art);
-  await db.put('bodies', { id: art.id, raw });
+  await db.put('bodies', { id: art.id, raw, updated: art.updated });
+  scheduleSync();
   closeModal();
   toast(`已导入：${art.title}`);
   openArticle(art.id);
@@ -862,16 +1053,22 @@ async function importData(file) {
   try {
     const data = JSON.parse(await file.text());
     if (!data.articles && !data.vocab) throw new Error('不是有效的备份文件');
+    const stamp = Date.now();
     for (const a of data.articles || []) {
       const meta = { ...a };
+      meta.updated = meta.updated || stamp;
       if (typeof meta.raw === 'string') {           // 旧版备份：正文内嵌在文章里
-        await db.put('bodies', { id: meta.id, raw: meta.raw });
+        await db.put('bodies', { id: meta.id, raw: meta.raw, updated: meta.updated });
         delete meta.raw;
       }
       await db.put('articles', meta);
     }
-    for (const b of data.bodies || []) { await db.put('bodies', b); }
-    for (const v of data.vocab || []) { await db.put('vocab', v); }
+    for (const b of data.bodies || []) {
+      await db.put('bodies', { ...b, updated: b.updated || stamp });
+    }
+    for (const v of data.vocab || []) {
+      await db.put('vocab', { ...v, updated: v.updated || stamp });
+    }
     if (data.settings) { settings = { ...DEFAULT_SETTINGS, ...data.settings }; saveSettings(); }
     await loadAll();
     toast(`导入完成：${(data.articles || []).length} 篇文章、${(data.vocab || []).length} 个生词`);
@@ -946,6 +1143,32 @@ const ACTIONS = {
       title: parsed.title, text: parsed.sentences.map(s => s.text).join(' '),
     }));
   },
+  'sync-save-cfg': () => {
+    const url = $('#sy-url').value.trim();
+    const key = $('#sy-key').value.trim();
+    if (!/^https?:\/\//.test(url) || key.length < 20) {
+      renderSync('请填写完整的 Project URL（https://…）和 anon public key');
+      return;
+    }
+    sync.saveConfig({ url, anonKey: key });
+    toast('同步服务已保存');
+    renderSync();
+  },
+  'sync-reset-cfg': () => {
+    if (!confirm('要换一个 Supabase 项目吗？当前登录状态会被清除，本地数据不受影响。')) return;
+    sync.saveConfig({ url: '', anonKey: '', session: null, email: '' });
+    renderSync();
+  },
+  'sync-reload-ui': () => renderSync(),
+  'sync-signin': () => doAuth('in'),
+  'sync-signup': () => doAuth('up'),
+  'sync-now': () => runSync(true),
+  'sync-signout': async () => {
+    if (!confirm('退出登录？本地数据会保留，重新登录后会重新同步。')) return;
+    await sync.signOut();
+    renderSync();
+    toast('已退出登录');
+  },
   'save-ai': () => {
     ai.setConfig({
       baseUrl: $('#set-baseurl').value.trim(),
@@ -1001,6 +1224,10 @@ function wire() {
   $$('#tabbar .tab').forEach(t => t.addEventListener('click', () => setView(t.dataset.tab)));
   $('#btn-back').addEventListener('click', () => setView(S.view === 'review' ? 'vocab' : 'library'));
   $('#btn-settings').addEventListener('click', () => setView('settings'));
+  $('#btn-sync').addEventListener('click', () => {
+    if (!sync.isSignedIn()) { setView('settings'); toast('先在下面登录账号'); return; }
+    runSync(true);
+  });
   $('#btn-theme').addEventListener('click', () => {
     const order = ['auto', 'light', 'sepia', 'dark'];
     settings.theme = order[(order.indexOf(settings.theme) + 1) % order.length];
@@ -1043,8 +1270,10 @@ function wire() {
       if (!confirm(`删除《${a?.title || ''}》？`)) return;
       S.articles = S.articles.filter(x => x.id !== id);
       parsedCache.delete(id);
-      db.del('articles', id).catch(() => {});
+      // 留一个墓碑，别的设备才能知道这篇被删了
+      db.put('articles', { id, title: a?.title || '', deleted: true, updated: touch() }).catch(() => {});
       db.del('bodies', id).catch(() => {});
+      scheduleSync();
       renderLibrary();
       return;
     }
@@ -1127,6 +1356,14 @@ function wire() {
   $('#set-font').addEventListener('change', e => { settings.font = e.target.value; saveSettings(); });
   $('#set-theme').addEventListener('change', e => { settings.theme = e.target.value; saveSettings(); });
   $('#set-autoai').addEventListener('change', e => { settings.autoAI = e.target.checked; saveSettings(); });
+  $('#sync-body').addEventListener('change', e => {
+    if (e.target.id === 'sy-auto') {
+      sync.saveConfig({ autoSync: e.target.checked });
+      if (e.target.checked) runSync(false);
+      toast(e.target.checked ? '已开启自动同步' : '已关闭自动同步');
+    }
+  });
+
   $('#set-voice').addEventListener('change', e => { settings.ttsVoice = e.target.value; saveSettings(); tts.say('Hello, this is your reading voice.', settings.ttsRate / 100); });
 
   $('#file-import').addEventListener('change', e => {
@@ -1161,7 +1398,7 @@ function wire() {
   });
 
   window.addEventListener('beforeunload', () => {
-    if (S.cur) db.put('articles', { ...S.cur.article }).catch(() => {});
+    if (S.cur) persistArticle(S.cur.article);   // 不会复活已删除的文章
   });
 }
 
@@ -1254,10 +1491,28 @@ function applyDeepLink() {
 async function loadAll() {
   const [arts, voc] = await Promise.all([db.all('articles'), db.all('vocab')]);
   // 合并而不是覆盖：读取期间用户可能已经导入文章 / 收藏生词
-  const byId = new Map((arts || []).map(a => [a.id, a]));
-  for (const a of S.articles) byId.set(a.id, a);
+  const byId = new Map((arts || []).filter(a => !a.deleted).map(a => [a.id, a]));
+  for (const a of S.articles) if (!a.deleted) byId.set(a.id, a);
   S.articles = [...byId.values()];
-  S.vocab = new Map([...(voc || []).map(v => [v.word, v]), ...S.vocab]);
+  S.vocab = new Map([...(voc || []).filter(v => !v.deleted).map(v => [v.word, v]), ...S.vocab]);
+}
+
+/** 同步之后整盘重读本地数据（远端可能有增删改） */
+async function reloadAll() {
+  S.articles = [];
+  S.vocab = new Map();
+  parsedCache.clear();
+  await loadAll();
+}
+
+const touch = () => Date.now();
+
+/** 写回文章元数据。若这篇文章已经被（本机或其它设备）删除，就不要再把它写活。
+ *  用事务内「读—改—写」，避免 beforeunload / 滚动进度把过期的内存副本盖回去。 */
+function persistArticle(a) {
+  if (!a || !a.id) return Promise.resolve();
+  const plain = { ...a };
+  return db.update('articles', a.id, cur => (cur && cur.deleted) ? null : plain).catch(() => {});
 }
 
 async function boot() {
@@ -1280,9 +1535,22 @@ async function boot() {
   db.persist();
 
   ensureDict();
+
+  // 启动后自动同步一次（登录过且开着自动同步）
+  if (sync.isSignedIn() && sync.getConfig().autoSync) {
+    setTimeout(() => runSync(false), 1200);
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (!sync.isSignedIn() || !sync.getConfig().autoSync) return;
+    if (Date.now() - sync.lastSyncAt() < 60000) return;   // 一分钟内不重复
+    runSync(false);
+  });
+
   applyDeepLink();
 
-  if ('serviceWorker' in navigator) {
+  // ?nosw=1 可跳过 Service Worker（调试用；也方便在自动化测试里排除缓存干扰）
+  if ('serviceWorker' in navigator && !new URLSearchParams(location.search).has('nosw')) {
     try { await navigator.serviceWorker.register('./sw.js', { scope: './' }); } catch {}
   }
 
