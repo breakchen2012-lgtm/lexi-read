@@ -38,6 +38,62 @@ export function saveConfig(patch) {
   return next;
 }
 
+/**
+ * 配置自检：地址对不对、Key 收不收、建表 SQL 跑没跑。
+ * 不需要登录就能用，专门给刚配好的人一个明确反馈。
+ */
+export async function testConfig() {
+  const c = getConfig();
+  if (!c.url || !c.anonKey) throw new SyncError('还没有填写项目地址和 Key');
+  // Supabase 官方一定是 https；本机自建的允许 http
+  const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?/i.test(c.url);
+  if (!/^https:\/\//.test(c.url) && !isLocal) {
+    throw new SyncError('项目地址要以 https:// 开头，形如 https://xxxxxxxx.supabase.co');
+  }
+  if (/^sb_secret_/.test(c.anonKey)) {
+    throw new SyncError('这是 secret key，不能放在前端。请改用 Publishable key（或旧版的 anon public）');
+  }
+
+  // 1) 地址与 Key 是否被接受
+  let r;
+  try {
+    r = await fetch(`${c.url}/auth/v1/settings`, { headers: { apikey: c.anonKey } });
+  } catch (e) {
+    throw new SyncError('连不上这个地址：' + (e.message || e) +
+      '。检查 Project URL 有没有抄错（形如 https://xxxxxxxx.supabase.co）');
+  }
+  if (r.status === 401 || r.status === 403) {
+    throw new SyncError('地址能通，但 Key 不被接受。确认复制的是 Publishable key（sb_publishable_…）或旧版 anon public');
+  }
+  if (r.status === 404) {
+    throw new SyncError('地址能通但路径不对，Project URL 应该是 https://你的项目.supabase.co（结尾不要带 /rest/v1）');
+  }
+  if (!r.ok) throw new SyncError('连接返回 HTTP ' + r.status);
+
+  // 2) 建表 SQL 跑了没有
+  let t;
+  try {
+    t = await fetch(`${c.url}/rest/v1/lexi_settings?select=user_id&limit=1`, {
+      headers: { apikey: c.anonKey },
+    });
+  } catch (e) {
+    throw new SyncError('地址和 Key 都对，但读取数据表失败：' + (e.message || e));
+  }
+  if (t.status === 404) {
+    throw new SyncError('地址和 Key 都对，但还没建表 —— 请到 SQL Editor 里执行那段建表语句（应用里有「📋 复制建表 SQL」按钮）');
+  }
+  if (!t.ok && t.status !== 401 && t.status !== 403) {
+    throw new SyncError('数据表读取返回 HTTP ' + t.status);
+  }
+
+  return {
+    url: c.url,
+    keyKind: /^sb_publishable_/.test(c.anonKey) ? 'publishable（新版公开密钥）'
+      : /^eyJ/.test(c.anonKey) ? 'anon JWT（旧版公开密钥）' : '未知格式',
+    tables: true,
+  };
+}
+
 export function isConfigured() {
   const c = getConfig();
   return !!(c.url && c.anonKey);

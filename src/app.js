@@ -970,9 +970,11 @@ function syncSetupHtml(cfg) {
     同步用的是你自己的 Supabase 免费项目，不用信用卡，数据只有你能读写。</p>
     <ol class="sync-steps">
       <li>去 <a href="https://supabase.com" target="_blank" rel="noopener">supabase.com</a> 注册，新建一个项目，等它初始化完成</li>
-      <li>左侧打开 <b>SQL Editor</b> → <b>New query</b></li>
-      <li>点下面这个按钮复制建表语句，粘到 SQL Editor 里 → 点 <b>Run</b></li>
-      <li><b>Project Settings → API</b> 里复制 <b>Project URL</b> 和 <b>anon public</b>，填到下面</li>
+      <li><b>Project URL</b>：点页面右上角绿色的 <b>Connect</b> 按钮，弹窗里第一条就是（形如 <code>https://xxxx.supabase.co</code>）</li>
+      <li><b>API Key</b>：左侧 <b>Settings → API Keys</b> 里的 <b>Publishable key</b>（<code>sb_publishable_…</code>，旧版叫 anon public）。
+          <b>千万不要用 secret key</b></li>
+      <li>左侧 <b>SQL Editor</b> → <b>New query</b> → 用下面按钮复制建表语句 → 粘进去 → <b>Run</b></li>
+      <li>把上面两个值填到下面，点「测试连接」确认无误</li>
     </ol>
     <div class="wc-row" style="margin-bottom:12px">
       <button class="btn primary" data-action="copy-sql">📋 复制建表 SQL</button>
@@ -985,7 +987,11 @@ function syncSetupHtml(cfg) {
     <div class="sync-field"><span>anon public key</span>
       <input id="sy-key" type="text" autocomplete="off" spellcheck="false"
              placeholder="eyJhbGciOi..." value="${esc(cfg.anonKey)}"></div>
-    <div class="wc-row"><button class="btn primary" data-action="sync-save-cfg">保存并继续</button></div>
+    <div class="wc-row">
+      <button class="btn primary" data-action="sync-save-cfg">保存并继续</button>
+      <button class="btn" data-action="sync-test-cfg">测试连接</button>
+    </div>
+    <div id="sy-test-out" hidden></div>
     <p class="wc-note">也可以在部署时把这两个值填进 <code>config.js</code>，
     所有设备打开就自动配好，不用每台填一次。</p>`;
 }
@@ -1446,6 +1452,25 @@ const ACTIONS = {
     sync.saveConfig({ url, anonKey: key });
     toast('同步服务已保存');
     renderSync();
+  },
+  'sync-test-cfg': async () => {
+    const out = $('#sy-test-out');
+    const url = ($('#sy-url')?.value || '').trim();
+    const key = ($('#sy-key')?.value || '').trim();
+    if (out) { out.hidden = false; out.innerHTML = '<div class="loading" style="margin-top:12px"><span class="spinner"></span>正在测试…</div>'; }
+    sync.saveConfig({ url, anonKey: key });
+    try {
+      const r = await sync.testConfig();
+      if (out) out.innerHTML = `<div class="na-status is-ok" style="margin-top:12px">✓ 连接正常<br>
+        <span style="font-size:12.5px;color:var(--fg-dim)">地址 ${esc(r.url)}<br>
+        Key 类型：${esc(r.keyKind)}<br>数据表已就绪，可以注册账号了</span></div>`;
+      renderWelcome();
+      const keep = $('#sy-test-out');
+      if (keep) { keep.hidden = false; keep.innerHTML = `<div class="na-status is-ok" style="margin-top:12px">✓ 连接正常，数据表已就绪 —— 现在填邮箱密码注册即可</div>`; }
+    } catch (e) {
+      if (out) out.innerHTML = `<div class="na-status is-err" style="margin-top:12px">✗ ${esc(e.message)}</div>`;
+      else toast(e.message, 6000);
+    }
   },
   'sync-reset-cfg': () => {
     if (!confirm('要换一个 Supabase 项目吗？当前登录状态会被清除，本地数据不受影响。')) return;

@@ -201,6 +201,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     else:
                         self._send(401, {'error_description': 'Invalid Refresh Token'})
                     return True
+            if route == 'settings':
+                return self._send(200, {'external': {'email': True}, 'disable_signup': False}) or True
             if route == 'logout':
                 self._send(204)
                 return True

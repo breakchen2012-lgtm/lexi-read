@@ -276,6 +276,37 @@ try {
     JSON.stringify(rows).slice(0, 60));
 } catch (e) { rec(false, '换一个账号登录看不到别人的数据', e.message); }
 
+/* ── 21. 配置自检（testConfig）的各个分支 ── */
+try {
+  await evalAsync(B, `localStorage.setItem('lexiread.sync', JSON.stringify({url:'',anonKey:''})); return 1;`);
+  await evalAsync(B, `try { await __lexisync.testConfig(); return 'NO-THROW'; } catch(e){ return e.message; }`)
+    .then(m => rec(/还没有填写/.test(m), '自检：没填配置时提示去填', m))
+    .catch(e => rec(false, '自检：没填配置时提示去填', e.message));
+} catch (e) { rec(false, '自检：没填配置时提示去填', e.message); }
+
+try {
+  const m = await evalAsync(B, `localStorage.setItem('lexiread.sync', JSON.stringify(
+      {url:'${SB}', anonKey:'sb_secret_uVRbcSHOULDNOTBEUSED'}));
+    try { await __lexisync.testConfig(); return 'NO-THROW'; } catch(e){ return e.message; }`);
+  rec(/secret key/.test(m), '自检：拦住 secret key（不该放在前端）', m);
+} catch (e) { rec(false, '自检：拦住 secret key（不该放在前端）', e.message); }
+
+try {
+  const m = await evalAsync(B, `localStorage.setItem('lexiread.sync', JSON.stringify(
+      {url:'https://this-host-does-not-exist-xyz.supabase.co', anonKey:'sb_publishable_abcdefghijklmnop'}));
+    try { await __lexisync.testConfig(); return 'NO-THROW'; } catch(e){ return e.message; }`);
+  rec(/连不上|地址/.test(m), '自检：地址写错时给出明确提示', String(m).slice(0, 60));
+} catch (e) { rec(false, '自检：地址写错时给出明确提示', e.message); }
+
+try {
+  const m = await evalAsync(B, `localStorage.setItem('lexiread.sync', JSON.stringify(
+      {url:'${SB}', anonKey:'${'sb_publishable_'}testkey0123456789abcdef'}));
+    const r = await __lexisync.testConfig();
+    return JSON.stringify(r);`);
+  const o = JSON.parse(m);
+  rec(o.tables === true && /publishable/.test(o.keyKind), '自检：新版 sb_publishable_ 密钥被正确识别', m);
+} catch (e) { rec(false, '自检：新版 sb_publishable_ 密钥被正确识别', e.message); }
+
 const pass = results.filter(r => r[0]).length;
 document.getElementById('out').innerHTML = `<h3>${pass}/${results.length} 通过</h3>` +
   results.map(([ok, n, i]) => `<div class="${ok ? 'pass' : 'fail'}">${ok ? '✓' : '✗'} ${n}${i ? ' <span style="color:#888">→ ' + String(i).replace(/</g, '&lt;') + '</span>' : ''}</div>`).join('');
