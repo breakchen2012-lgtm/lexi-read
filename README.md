@@ -48,9 +48,18 @@ python3 -m http.server 8777
 
 打开 <http://127.0.0.1:8777>。Mac 上就能直接用了。
 
-### 2. 部署到网上，让 iPhone / iPad 也能装（约 5 分钟）
+### 2. 部署到网上，让 iPhone / iPad 也能装（约 2 分钟）
 
-任选一种，都不花钱：
+**最省事：双击 [`发布到GitHub.command`](发布到GitHub.command)**
+
+在访达里双击它（首次可能要右键 →「打开」）。它会自动：让你登录一次 GitHub（
+验证码直接显示在终端窗口里，当场就能用）→ 建一个公开仓库 → 推代码 → 打开 GitHub Pages →
+等它上线并把网址给你、顺手用浏览器打开。全程只要在第一次登录时点一下授权。
+
+> 需要本机有 `curl` 和 `git`（macOS 自带）。没有 `gh` 的话脚本会自动下载一份放在
+> `~/Library/Application Support/LexiReadTools`，不动你的系统。
+
+**或者手动来**，任选一种，都不花钱：
 
 #### 方案 A：Netlify Drop（最简单，不用 git、不用装东西）
 
@@ -251,6 +260,40 @@ python3 scripts/build_dict.py build/ecdict.csv data/dict.json
 ```
 
 脚本会按 COCA/BNC 词频、柯林斯星级、牛津核心、各类考试标签筛选，并清掉 `[网络]` 这类噪声释义。想要更大的词库，改 `scripts/build_dict.py` 里的 `RANK_LIMIT` / `HARD_CAP` 即可。
+
+---
+
+## 分享给别人用
+
+**可以，这个应用就是设计成随便分享的。** 三种方式：
+
+### 方式一：直接把网址给别人（最省事）
+
+把 `https://你的用户名.github.io/lexi-read/` 发给对方就行。对方用 Safari 打开 →
+分享 →「添加到主屏幕」，就是完整的 App。
+
+- 对方要**填自己的 DeepSeek API Key**（设置 → AI 引擎）。**AI 花的钱算在他自己账上，不花你的。**
+- 每个人的文章、生词、进度都只存在**自己设备的浏览器里**，互相看不见。
+- ⚠️ 如果你把填了 Supabase 的 `config.js` 一起部署了，别人也能在你这个 Supabase 项目里注册。
+  数据是互相隔离的（行级安全挡着），但会占你的免费额度。想避免就把分享版本的 `config.js`
+  留空（对方用不了云同步，其它功能照常），或者让朋友用方式二。
+
+### 方式二：让对方 Fork 一份自己的（推荐给认真用的朋友）
+
+1. 对方在仓库页面点右上角 **Fork**
+2. 在**他自己**的仓库里：**Settings → Pages → Source 选 `main` / `(root)` → Save**
+3. 对方得到自己的网址、自己的数据库，完全独立
+
+如果对方也用 `发布到GitHub.command`，它会直接问仓库名并自动建库、推代码、开 Pages，
+连 Fork 都不用。
+
+### 方式三：打包成文件发过去
+
+整个文件夹就是一个静态网站。压缩后发给对方，对方双击 `发布到GitHub.command`，
+或把文件夹拖到 <https://app.netlify.com/drop>，就有自己的一份。
+
+> **千万别**把 API Key 写进 `config.js` 再上传 —— 那个文件是公开的。
+> Key 永远只填在应用界面里（存在浏览器本地，不进仓库）。
 
 ---
 
