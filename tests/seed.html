@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>LexiRead seed</title>
+<script>
+  window.__errs = [];
+  addEventListener('error', e => window.__errs.push('error: ' + (e.message || e.error)));
+  addEventListener('unhandledrejection', e => window.__errs.push('reject: ' + ((e.reason && e.reason.message) || e.reason)));
+</script>
+</head>
+<body>
+<div id="out">seeding…</div>
+<script type="module">
+import { parseArticle } from '../src/text.js';
+import * as ai from '../src/ai.js';
+
+const ARTICLE = `The Quiet Power of Context
+
+Most people learn vocabulary by memorizing isolated words. Yet research shows that a word is far easier to retain when it is encountered inside a meaningful sentence.
+
+Consider the word "resilient". A dictionary tells you it means "able to recover quickly". But when you meet it in a story about a city rebuilding after a flood, the word acquires weight and colour that no definition can supply.
+
+This is why reading widely matters. Every sentence you finish quietly rewires the way you remember language. Learners who read a little every day consistently outperform those who cram once a week.`;
+
+const DEMO_AI = `【本句释义】adj. 有韧性的；能迅速恢复的（这里形容城市灾后恢复能力强）
+【为什么】后半句 a city rebuilding after a flood 给出了「遭受重创后重新站起来」的语境线索，与 resilient 的核心义「弹回原状」吻合。
+【其他常用义】
+· （人）适应力强的：Children are remarkably resilient.
+· （材料）有弹性的：a resilient material
+【例句】The local economy proved surprisingly resilient after the factory closed.
+　　　工厂关闭后，当地经济表现出惊人的韧性。
+【记忆】re-（回）+ sil（跳）+ -ient → 被压下去还能弹回来。同族词：resilience n. 韧性。`;
+
+const VOCAB = [
+  ['resilient', "ri'ziliənt", 'adj. 有韧性的，能迅速恢复的', 'Consider the word "resilient".', -0.05],
+  ['encounter', "in'kauntə", 'vt. 遭遇, 遇到；n. 相遇', 'a word is far easier to retain when it is encountered inside a meaningful sentence.', 4],
+  ['retain', "ri'tein", 'vt. 保持, 保留, 记住', 'a word is far easier to retain when it is encountered inside a meaningful sentence.', 2],
+  ['consistently', "kən'sistəntli", 'adv. 一贯地, 一致地', 'Learners who read a little every day consistently outperform those who cram once a week.', 9],
+  ['outperform', ",autpə'fɔ:m", 'vt. 胜过, 做得比…好', 'Learners who read a little every day consistently outperform those who cram once a week.', 0.4],
+];
+
+const ART_ID = 'demo-article';
+const parsed = parseArticle(ARTICLE, 'The Quiet Power of Context');
+
+function openDB() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('lexiread', 2);
+    r.onupgradeneeded = () => {
+      const db = r.result;
+      if (!db.objectStoreNames.contains('articles')) db.createObjectStore('articles', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('bodies')) db.createObjectStore('bodies', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('vocab')) db.createObjectStore('vocab', { keyPath: 'word' });
+      if (!db.objectStoreNames.contains('aica')) db.createObjectStore('aica', { keyPath: 'k' });
+      if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv', { keyPath: 'k' });
+    };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+const db = await openDB();
+const tx = (store, fn) => new Promise((res, rej) => {
+  const t = db.transaction(store, 'readwrite');
+  const r = fn(t.objectStore(store));
+  t.oncomplete = () => res(r && r.result);
+  t.onerror = () => rej(t.error);
+});
+
+for (const st of ['articles', 'bodies', 'vocab', 'aica', 'kv']) await tx(st, s => s.clear());
+
+await tx('articles', s => s.put({
+  id: ART_ID, title: 'The Quiet Power of Context',
+  created: Date.now() - 86400000, lastRead: Date.now(), progress: 0.34, wordCount: parsed.words,
+}));
+await tx('bodies', s => s.put({ id: ART_ID, raw: ARTICLE }));
+for (const [word, phonetic, translation, sentence, days] of VOCAB) {
+  await tx('vocab', s => s.put({
+    word, phonetic, translation, sentence, articleId: ART_ID,
+    articleTitle: 'The Quiet Power of Context',
+    added: Date.now() - 3 * 86400000, last: Date.now() - 86400000,
+    due: Date.now() + days * 86400000, interval: Math.max(days, 0.2), ease: 2.5,
+    reps: days < 1 ? 1 : 3, lapses: 0, stage: days >= 21 ? 'mastered' : 'learning',
+  }));
+}
+const sent = parsed.sentences.find(s => /resilient/i.test(s.text))?.text || '';
+await tx('aica', s => s.put({ k: 'ai:' + ai.cacheKeyFor('w', ['resilient', sent]), text: DEMO_AI, t: Date.now() }));
+
+localStorage.setItem('lexiread.ai', JSON.stringify({ baseUrl: 'https://api.deepseek.com', apiKey: 'sk-demo', model: 'deepseek-chat' }));
+localStorage.setItem('lexiread.settings', JSON.stringify({
+  fontSize: 20, lineHeight: 190, width: 720, font: 'serif', theme: 'light', autoAI: true, ttsRate: 95, ttsVoice: '',
+}));
+
+document.getElementById('out').textContent = 'seeded ' + VOCAB.length + ' words, article ' + parsed.words + ' words';
+document.title = 'SEED-READY';
+await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ results: [[true, 'seed done', ART_ID]], errors: window.__errs }) });
+</script>
+</body>
+</html>

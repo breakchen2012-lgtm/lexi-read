@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>LexiRead e2e</title>
+<script>
+  window.__errs = [];
+  window.__posted = false;
+  addEventListener('error', e => window.__errs.push('error: ' + (e.message || e.error)));
+  addEventListener('unhandledrejection', e => window.__errs.push('reject: ' + ((e.reason && e.reason.message) || e.reason)));
+  setTimeout(() => {
+    if (window.__posted) return;
+    fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results: window.__partial || [], errors: window.__errs.concat(['watchdog: e2e 未跑完']) }) }).catch(() => {});
+  }, 150000);
+</script>
+<style>
+  body{ font: 15px/1.7 ui-monospace, monospace; margin:0; padding:12px; }
+  iframe{ width:390px; height:844px; border:1px solid #ccc; background:#fff; }
+  .pass{ color:#0a0 } .fail{ color:#c00; font-weight:700 }
+</style>
+</head>
+<body>
+<div id="out">running…</div>
+<iframe id="app" src="../index.html"></iframe>
+<script type="module">
+const results = [];
+window.__partial = results;
+let posting = false;
+function push() {
+  if (posting) return;
+  posting = true;
+  setTimeout(() => {
+    posting = false;
+    fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results, errors: window.__errs || [], partial: true }) }).catch(() => {});
+  }, 40);
+}
+const rec = (ok, name, info = '') => { results.push([!!ok, name, info]); push(); };
+const wait = ms => new Promise(r => setTimeout(r, ms));
+async function waitFor(fn, ms = 6000, label = '') {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    try { const v = fn(); if (v) return v; } catch (e) {}
+    await wait(60);
+  }
+  throw new Error('等待超时 ' + label);
+}
+
+const frame = document.getElementById('app');
+const W = () => frame.contentWindow;
+const D = () => frame.contentDocument;
+
+const ARTICLE = `The Quiet Power of Context
+
+Most people learn vocabulary by memorizing isolated words. Yet research shows that a word is far easier to retain when it is encountered inside a meaningful sentence.
+
+Consider the word "resilient". A dictionary tells you it means "able to recover quickly". But when you meet it in a story about a city rebuilding after a flood, the word acquires weight and colour that no definition can supply.
+
+This is why reading widely matters. Every article you finish quietly rewires the way you remember language.`;
+
+try {
+  await new Promise(r => { frame.addEventListener('load', () => r(), { once: true }); setTimeout(r, 8000); });
+  await hookErrors();
+  await waitFor(() => D().querySelector('#article-list'), 8000, '书架渲染');
+  await waitFor(() => D().body.dataset.ready === '1', 8000, '本地数据加载完成');
+  rec(true, '应用启动并渲染书架');
+} catch (e) { rec(false, '应用启动并渲染书架', e.message); }
+
+/* 1 ── 导入文章 */
+let importDiag = '';
+try {
+  // 探针 A：直接调用 parseArticle，看是否抛错
+  const tt = await import('../src/text.js');
+  let probeA = '';
+  try {
+    const p = tt.parseArticle(ARTICLE, 'x');
+    probeA = 'ok b=' + p.blocks.length + ' s=' + p.sentences.length + ' w=' + p.words;
+  } catch (e) { probeA = 'THROW ' + e.message; }
+  rec(true, '探针：parseArticle(ARTICLE) → ' + probeA);
+
+  // 探针 B：记录 iframe 内的点击是否到达 document
+  const clicks = [];
+  D().addEventListener('click', e => clicks.push((e.target.dataset && e.target.dataset.action) || e.target.tagName), true);
+  W().__clicks = clicks;
+
+  D().querySelector('[data-action="new-article"]').click();
+  const ta = await waitFor(() => D().querySelector('#na-text'), 3000, '导入弹窗');
+  ta.value = ARTICLE;
+  const btn = D().querySelector('[data-action="na-save"]');
+  importDiag = 'btn=' + !!btn + ' len=' + ta.value.length;
+  btn.click();
+  await wait(1200);
+  importDiag += ' clicks=' + JSON.stringify(clicks)
+    + ' modalHidden=' + D().querySelector('#modal').hidden
+    + ' toast=' + (D().querySelector('#toast').textContent || '')
+    + ' blocks=' + D().querySelectorAll('#reader-body p').length
+    + ' views=' + Array.from(D().querySelectorAll('.view.is-on')).map(v => v.id).join(',')
+;
+  const w = await waitFor(() => D().querySelector('#reader-body .w'), 5000, '阅读器渲染');
+  rec(true, '导入文章后进入阅读器');
+} catch (e) { rec(false, '导入文章后进入阅读器', e.message + ' | ' + importDiag); }
+
+/* 2 ── 阅读器渲染质量 */
+try {
+  const words = D().querySelectorAll('#reader-body .w').length;
+  const sents = D().querySelectorAll('#reader-body .sent').length;
+  const blocks = D().querySelectorAll('#reader-body > *').length;
+  const title = D().querySelector('#reader-title').textContent;
+  rec(words > 60 && sents >= 8 && blocks >= 4, '阅读器分词渲染',
+    JSON.stringify({ words, sents, blocks, title }));
+} catch (e) { rec(false, '阅读器分词渲染', e.message); }
+
+/* 3 ── 点词出面板 + 本地词典释义 */
+try {
+  const el = D().querySelector('.w[data-w="resilient"]');
+  el.click();
+  await waitFor(() => !D().querySelector('#panel').hidden, 3000, '面板打开');
+  const body = D().querySelector('#panel-body').textContent;
+  const head = D().querySelector('#ph-word').textContent;
+  rec(/弹回|有弹力|韧/.test(body) && head === 'resilient', '点词显示本地词典释义',
+    JSON.stringify({ head, hit: body.slice(0, 50) }));
+} catch (e) { rec(false, '点词显示本地词典释义', e.message); }
+
+/* 4 ── 原句语境高亮 */
+try {
+  const ctx = D().querySelector('#panel-body .ctx-sent').innerHTML;
+  rec(/<em>resilient<\/em>/i.test(ctx), '面板高亮原句中的目标词');
+} catch (e) { rec(false, '面板高亮原句中的目标词', e.message); }
+
+/* 5 ── 无 Key 时给出引导而不是报错 */
+try {
+  const ai = D().querySelector('#ai-word').textContent;
+  rec(/让 AI 讲解|API Key/.test(ai), '未配置 Key 时给出引导', ai.slice(0, 40));
+} catch (e) { rec(false, '未配置 Key 时给出引导', e.message); }
+
+/* 6 ── 加入生词本 */
+try {
+  D().querySelector('[data-action="save"]').click();
+  await waitFor(() => D().querySelector('#panel-foot [data-action="unsave"]'), 3000, '收藏状态');
+  const saved = D().querySelectorAll('#reader-body .w.saved').length;
+  const stored = await new Promise(res => {
+    const rq = W().indexedDB.open('lexiread');
+    rq.onsuccess = () => {
+      const g = rq.result.transaction('vocab').objectStore('vocab').get('resilient');
+      g.onsuccess = () => res(g.result);
+      g.onerror = () => res(null);
+    };
+    rq.onerror = () => res(null);
+  });
+  rec(saved >= 1 && stored && stored.word === 'resilient' && /resilient/i.test(stored.sentence || ''),
+    '加入生词本（含原句语境）', JSON.stringify({ saved, sent: (stored?.sentence || '').slice(0, 40) }));
+} catch (e) { rec(false, '加入生词本（含原句语境）', e.message); }
+
+/* 7 ── 关闭面板 */
+try {
+  D().querySelector('#ph-close').click();
+  await wait(200);
+  rec(D().querySelector('#panel').hidden === true, '关闭面板');
+} catch (e) { rec(false, '关闭面板', e.message); }
+
+/* 8 ── 句子面板 */
+try {
+  const sent = D().querySelector('#reader-body .sent');
+  const txt = Array.from(sent.childNodes).find(n => n.nodeType === 3);
+  if (txt) { sent.dispatchEvent(new (W().MouseEvent)('click', { bubbles: true })); } else { sent.click(); }
+  await waitFor(() => !D().querySelector('#panel').hidden, 3000, '句子面板');
+  const has = D().querySelector('#panel-body .ctx-sent') && D().querySelector('#ai-tr') && D().querySelector('#ai-gr');
+  rec(!!has, '点句子出现翻译 / 语法区');
+} catch (e) { rec(false, '点句子出现翻译 / 语法区', e.message); }
+try { D().querySelector('#ph-close').click(); } catch {}
+
+/* 9 ── 生词本页 */
+try {
+  D().querySelector('#tabbar .tab[data-tab="vocab"]').click();
+  await waitFor(() => D().querySelector('#vocab-list .card'), 3000, '生词本渲染');
+  const cards = D().querySelectorAll('#vocab-list .card').length;
+  const due = D().querySelector('#due-count');
+  rec(cards === 1 && !due.hidden, '生词本显示待复习', JSON.stringify({ cards, due: due.textContent }));
+} catch (e) { rec(false, '生词本显示待复习', e.message); }
+
+/* 10 ── 复习流程 */
+try {
+  D().querySelector('[data-action="start-review"]').click();
+  await waitFor(() => D().querySelector('#review-card .rc-word'), 3000, '复习卡');
+  const w = D().querySelector('.rc-word').textContent;
+  const cloze = D().querySelector('.rc-cloze')?.innerHTML || '';
+  const answerHidden = D().querySelector('#rc-answer').hidden;
+  D().querySelector('[data-action="reveal"]').click();
+  await wait(150);
+  const revealed = !D().querySelector('#rc-answer').hidden;
+  const gradeVisible = !D().querySelector('#rc-grades').hidden;
+  const g3 = D().querySelector('#g3i').textContent;
+  rec(w === 'resilient' && /<em>/.test(cloze) && !/resilient/i.test(cloze.replace(/<[^>]+>/g, ''))
+      && answerHidden && revealed && gradeVisible && /\d/.test(g3),
+    '复习卡：挖空 → 显示答案 → 评分按钮',
+    JSON.stringify({ w, answerHidden, revealed, g3 }));
+} catch (e) { rec(false, '复习卡：挖空 → 显示答案 → 评分按钮', e.message); }
+
+/* 11 ── 评分写入 */
+try {
+  D().querySelector('[data-grade="3"]').click();
+  await wait(300);
+  const stored = await new Promise(res => {
+    const rq = W().indexedDB.open('lexiread');
+    rq.onsuccess = () => {
+      const g = rq.result.transaction('vocab').objectStore('vocab').get('resilient');
+      g.onsuccess = () => res(g.result);
+      g.onerror = () => res(null);
+    };
+    rq.onerror = () => res(null);
+  });
+  rec(stored && stored.reps === 1 && stored.interval >= 1, '评分后写入间隔重复数据',
+    JSON.stringify({ reps: stored?.reps, interval: stored?.interval }));
+} catch (e) { rec(false, '评分后写入间隔重复数据', e.message); }
+
+/* 12 ── 排版设置生效 */
+try {
+  D().querySelector('#tabbar .tab[data-tab="settings"]').click();
+  await waitFor(() => D().querySelector('#set-fontsize'), 3000, '设置页');
+  const r = D().querySelector('#set-fontsize');
+  r.value = '26';
+  r.dispatchEvent(new (W().Event)('input', { bubbles: true }));
+  await wait(150);
+  const fs = D().documentElement.style.getPropertyValue('--fs');
+  const saved = JSON.parse(W().localStorage.getItem('lexiread.settings') || '{}');
+  rec(fs === '26px' && saved.fontSize === 26, '排版设置即时生效并持久化', JSON.stringify({ fs, saved: saved.fontSize }));
+} catch (e) { rec(false, '排版设置即时生效并持久化', e.message); }
+
+/* 13 ── 主题切换 */
+try {
+  const order = ['auto', 'light', 'sepia', 'dark'];
+  const g = () => JSON.parse(W().localStorage.getItem('lexiread.settings') || '{}').theme;
+  const t0 = g();
+  D().querySelector('#btn-theme').click();
+  await wait(200);
+  const t1 = g();
+  const okSteps = order.indexOf(t1) === (order.indexOf(t0) + 1) % order.length && D().documentElement.dataset.theme === t1;
+  rec(okSteps, '主题循环切换并持久化', t0 + ' → ' + t1 + ' (渲染 ' + D().documentElement.dataset.theme + ')');
+} catch (e) { rec(false, '主题切换生效', e.message); }
+
+/* 14 ── 暗色主题下的横向溢出 */
+try {
+  D().documentElement.dataset.theme = 'dark';
+  await wait(200);
+  const cw = D().documentElement.clientWidth;
+  rec(D().documentElement.scrollWidth <= cw + 1, '暗色主题无横向溢出',
+    JSON.stringify({ cw, sw: D().documentElement.scrollWidth }));
+} catch (e) { rec(false, '暗色主题无横向溢出', e.message); }
+
+/* 15 ── 刷新后数据仍在（IndexedDB 持久化） */
+try {
+  frame.src = '../index.html?again=1';
+  await new Promise(r => { frame.addEventListener('load', () => r(), { once: true }); });
+  await waitFor(() => D().querySelector('#article-list .card'), 8000, '重载后书架');
+  const cards = D().querySelectorAll('#article-list .card').length;
+  D().querySelector('#tabbar .tab[data-tab="vocab"]').click();
+  await waitFor(() => D().querySelector('#vocab-list .card'), 3000, '重载后生词本');
+  rec(cards === 1 && D().querySelectorAll('#vocab-list .card').length === 1, '刷新后文章与生词仍在',
+    JSON.stringify({ cards }));
+} catch (e) { rec(false, '刷新后文章与生词仍在', e.message); }
+
+
+/* 16 ── AI 流式讲解（本地 mock 接口） */
+function setAI(base, key) {
+  W().localStorage.setItem('lexiread.ai', JSON.stringify({ baseUrl: base, apiKey: key, model: 'mock-model' }));
+}
+async function hookErrors() {
+  try {
+    W().addEventListener('error', e => window.__errs.push('iframe error: ' + (e.message || e.error)));
+    W().addEventListener('unhandledrejection', e => window.__errs.push('iframe reject: ' + ((e.reason && e.reason.message) || e.reason)));
+  } catch (e) { window.__errs.push('hook fail: ' + e.message); }
+}
+async function reload() {
+  frame.src = '../index.html?r=' + Math.random();
+  await new Promise(r => { frame.addEventListener('load', () => r(), { once: true }); });
+  await waitFor(() => D().body.dataset.ready === '1', 8000, '重载就绪');
+  await hookErrors();
+}
+try {
+  setAI(location.origin + '/__mock', 'sk-test');
+  await reload();
+  await waitFor(() => D().querySelector('#article-list .card [data-open]'), 5000, '书架卡片');
+  D().querySelector('#article-list .card [data-open]').click();
+  await waitFor(() => D().querySelector('#reader-body .w'), 5000, '阅读器');
+  D().querySelector('.w[data-w="resilient"]').click();
+  await waitFor(() => !D().querySelector('#panel').hidden, 3000, '面板');
+  const out = await waitFor(() => {
+    const t = D().querySelector('#ai-word')?.textContent || '';
+    return /弹回来的|有韧性/.test(t) ? t : null;
+  }, 9000, 'AI 流式输出');
+  rec(/【本句释义】/.test(out) && /有韧性/.test(out), 'AI 流式返回并渲染讲解', out.slice(0, 46));
+} catch (e) { rec(false, 'AI 流式返回并渲染讲解', e.message); }
+
+/* 17 ── 发给模型的请求内容是否正确 */
+try {
+  const m = await (await fetch('/__mock_last')).json();
+  const last = m.last || {};
+  const sys = last.messages?.[0]?.content || '';
+  const usr = last.messages?.[1]?.content || '';
+  const ok = last.model === 'mock-model' && last.stream === true
+    && /精读老师/.test(sys) && /resilient/.test(usr) && /Consider the word/.test(usr);
+  rec(ok, '请求体：模型名 / 流式 / 提示词含目标词与原句',
+    JSON.stringify({ model: last.model, stream: last.stream, hasWord: /resilient/.test(usr) }).slice(0, 120));
+} catch (e) { rec(false, '请求体：模型名 / 流式 / 提示词含目标词与原句', e.message); }
+
+/* 18 ── 命中缓存时不再请求接口（省钱） */
+try {
+  const before = (await (await fetch('/__mock_last')).json()).count;
+  D().querySelector('#ph-close').click();
+  await wait(250);
+  D().querySelector('.w[data-w="resilient"]').click();
+  await waitFor(() => /有韧性/.test(D().querySelector('#ai-word').textContent), 6000, '缓存命中');
+  await wait(400);
+  const after = (await (await fetch('/__mock_last')).json()).count;
+  rec(before === after, '同一词同句命中缓存，不重复调用接口',
+    JSON.stringify({ before, after }));
+} catch (e) { rec(false, '同一词同句命中缓存，不重复调用接口', e.message); }
+
+/* 19 ── Key 错误时的报错与引导 */
+try {
+  setAI(location.origin + '/__mock', 'sk-wrong');
+  await reload();
+  await waitFor(() => D().querySelector('#article-list .card [data-open]'), 5000, '书架');
+  D().querySelector('#article-list .card [data-open]').click();
+  await waitFor(() => D().querySelector('#reader-body .w'), 5000, '阅读器');
+  D().querySelector('.w[data-w="dictionary"]').click();
+  await waitFor(() => !D().querySelector('#panel').hidden, 3000, '面板');
+  const err = await waitFor(() => {
+    const t = D().querySelector('#ai-word')?.textContent || '';
+    return /401/.test(t) ? t : null;
+  }, 9000, '错误提示');
+  const hasRetry = !!D().querySelector('#ai-word [data-action="retry-ai"]');
+  const hasSettings = !!D().querySelector('#ai-word [data-action="go-settings"]');
+  rec(/API Key 不正确/.test(err) && hasRetry && hasSettings,
+    'Key 无效时提示原因并给出「重试 / 去设置」', err.slice(0, 60));
+} catch (e) { rec(false, 'Key 无效时提示原因并给出「重试 / 去设置」', e.message); }
+
+/* 20 ── 段落级 AI 导读入口存在 */
+try {
+  setAI(location.origin + '/__mock', 'sk-test');
+  D().querySelector('#ph-close').click();
+  const btn = D().querySelector('[data-action="article-guide"]');
+  btn.click();
+  const out = await waitFor(() => {
+    const t = D().querySelector('#guide-out')?.textContent || '';
+    return /有韧性/.test(t) ? t : null;
+  }, 9000, 'AI 导读');
+  rec(out.length > 10, '文章级 AI 导读可生成', out.slice(0, 40));
+} catch (e) { rec(false, '文章级 AI 导读可生成', e.message); }
+
+
+/* 21 ── Service Worker 接管并缓存外壳（离线能力） */
+try {
+  let ctrl = false;
+  const t0 = Date.now();
+  while (Date.now() - t0 < 15000) {
+    if (W().navigator.serviceWorker && W().navigator.serviceWorker.controller) { ctrl = true; break; }
+    await wait(300);
+  }
+  const keys = await W().caches.keys();
+  let shell = {};
+  try {
+    const c = await W().caches.open('lexiread-v3');
+    for (const u of ['./index.html', './src/app.js', './styles.css', './icons/icon-192.png']) {
+      shell[u] = !!(await c.match(u));
+    }
+  } catch (e) { shell = { err: e.message }; }
+  const ok = ctrl && keys.includes('lexiread-v3') && Object.values(shell).every(Boolean);
+  rec(ok, 'Service Worker 接管并缓存应用外壳（离线可用）',
+    JSON.stringify({ ctrl, keys, shell }).slice(0, 160));
+} catch (e) { rec(false, 'Service Worker 接管并缓存应用外壳（离线可用）', e.message); }
+
+/* 22 ── 词典已缓存，可离线查词 */
+try {
+  const c = await W().caches.open('lexiread-v3');
+  const hit = await c.match(new URL('./data/dict.json', W().location.href).href);
+  const size = hit ? (await hit.clone().text()).length : 0;
+  rec(!!hit && size > 1000000, '离线词典已进入缓存', JSON.stringify({ size }));
+} catch (e) { rec(false, '离线词典已进入缓存', e.message); }
+
+
+/* 23 ── 通过文件选择器导入 EPUB */
+async function fixtureFile(name, type) {
+  const buf = await (await fetch('./fixtures/' + name, { cache: 'no-store' })).arrayBuffer();
+  return new File([buf], name, { type });
+}
+try {
+  D().querySelector('[data-action="new-article"]').click();
+  const input = await waitFor(() => D().querySelector('#na-file'), 3000, '导入弹窗');
+  const file = await fixtureFile('sample.epub', 'application/epub+zip');
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  input.files = dt.files;
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  const status = await waitFor(() => {
+    const t = D().querySelector('#na-status')?.textContent || '';
+    return /已从/.test(t) ? t : null;
+  }, 20000, 'EPUB 解析');
+  const title = D().querySelector('#na-title').value;
+  rec(/sample\.epub/.test(status) && title === 'A Book About Reading',
+    '选择 EPUB 文件 → 解析出书名与词数', JSON.stringify({ title, st: status.slice(0, 46) }));
+} catch (e) { rec(false, '选择 EPUB 文件 → 解析出书名与词数', e.message); }
+
+/* 24 ── 把解析结果真正导入并开始阅读 */
+try {
+  D().querySelector('[data-action="na-save"]').click();
+  const rt = await waitFor(() => {
+    const t = D().querySelector('#reader-title')?.textContent || '';
+    return /Book About Reading/.test(t) && D().querySelectorAll('#reader-body .w').length > 20 ? t : null;
+  }, 10000, '阅读器渲染新书');
+  await wait(300);
+  const body = D().querySelector('#reader-body').textContent;
+  rec(/Book About Reading/.test(rt) && /Chapter One/.test(body) && /Chapter Two/.test(body)
+      && D().querySelector('#modal').hidden,
+    'EPUB 正文导入后可在阅读器里正常阅读', JSON.stringify({ rt, len: body.length }));
+} catch (e) { rec(false, 'EPUB 正文导入后可在阅读器里正常阅读', e.message); }
+
+/* 25 ── 拖放文件到导入弹窗 */
+try {
+  D().querySelector('#btn-back').click();
+  await waitFor(() => D().querySelector('#article-list'), 3000, '书架');
+  D().querySelector('[data-action="new-article"]').click();
+  const drop = await waitFor(() => D().querySelector('#na-drop'), 3000, '导入弹窗');
+  const file = await fixtureFile('paper.pdf', 'application/pdf');
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  const ev = new DragEvent('drop', { bubbles: true, cancelable: true });
+  Object.defineProperty(ev, 'dataTransfer', { value: dt });
+  drop.dispatchEvent(ev);
+  const status = await waitFor(() => {
+    const t = D().querySelector('#na-status')?.textContent || '';
+    return /已从/.test(t) ? t : null;
+  }, 25000, 'PDF 解析');
+  rec(/paper\.pdf/.test(status) && /PDF|词/.test(status),
+    '拖放 PDF 到弹窗 → 自动解析（pdf.js 懒加载）', status.slice(0, 60));
+} catch (e) { rec(false, '拖放 PDF 到弹窗 → 自动解析（pdf.js 懒加载）', e.message); }
+
+/* 26 ── 不支持格式的中文提示出现在界面上 */
+try {
+  D().querySelector('[data-action="modal-close"]').click();
+  await wait(200);
+  D().querySelector('[data-action="new-article"]').click();
+  const input = await waitFor(() => D().querySelector('#na-file'), 3000, '导入弹窗');
+  const dt = new DataTransfer();
+  dt.items.add(new File([new Uint8Array([1, 2, 3, 4])], 'novel.mobi', { type: 'application/x-mobipocket-ebook' }));
+  input.files = dt.files;
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  const status = await waitFor(() => {
+    const t = D().querySelector('#na-status')?.textContent || '';
+    return /导入失败/.test(t) ? t : null;
+  }, 6000, '错误提示');
+  rec(/Kindle|Calibre|mobi/i.test(status), '不支持的格式在界面上给出可操作提示', status.slice(0, 60));
+} catch (e) { rec(false, '不支持的格式在界面上给出可操作提示', e.message); }
+
+/* 输出 */
+const pass = results.filter(r => r[0]).length;
+document.getElementById('out').innerHTML = `<h3>${pass}/${results.length} 通过</h3>` +
+  results.map(([ok, name, info]) =>
+    `<div class="${ok ? 'pass' : 'fail'}">${ok ? '✓' : '✗'} ${name}${info ? ' <span style="color:#888">→ ' + String(info).replace(/</g, '&lt;') + '</span>' : ''}</div>`).join('');
+window.__posted = true;
+try {
+  await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ results, errors: window.__errs || [] }) });
+} catch {}
+</script>
+</body>
+</html>

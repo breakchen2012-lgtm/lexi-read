@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>LexiRead v1→v2 migration</title>
+<script>
+  window.__errs = [];
+  window.__posted = false;
+  addEventListener('error', e => window.__errs.push('error: ' + (e.message || e.error)));
+  setTimeout(() => {
+    if (window.__posted) return;
+    fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results: window.__partial || [], errors: window.__errs.concat(['watchdog']) }) }).catch(() => {});
+  }, 60000);
+</script>
+<style>body{font:15px/1.7 ui-monospace,monospace;margin:0;padding:12px}
+iframe{width:390px;height:844px;border:1px solid #ccc}.pass{color:#0a0}.fail{color:#c00;font-weight:700}</style>
+</head>
+<body>
+<div id="out">running…</div>
+<iframe id="app"></iframe>
+<script type="module">
+const results = [];
+window.__partial = results;
+const rec = (ok, name, info = '') => results.push([!!ok, name, info]);
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const frame = document.getElementById('app');
+const D = () => frame.contentDocument, W = () => frame.contentWindow;
+const waitFor = async (fn, ms, label) => {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) { try { const v = fn(); if (v) return v; } catch {} await wait(60); }
+  throw new Error('超时: ' + label);
+};
+const LEGACY = 'Legacy Article\n\nThe old version kept the whole article text inside the article record. '
+  + 'After the upgrade it should live in a separate bodies store, and this text must still be readable.';
+
+/* 造一个 v1 结构的数据库：articles 里带 raw，没有 bodies 存储 */
+const db1 = await new Promise((res, rej) => {
+  const r = indexedDB.open('lexiread', 1);
+  r.onupgradeneeded = () => {
+    const db = r.result;
+    for (const [n, k] of [['articles', 'id'], ['vocab', 'word'], ['aica', 'k'], ['kv', 'k']]) {
+      if (!db.objectStoreNames.contains(n)) db.createObjectStore(n, { keyPath: k });
+    }
+  };
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+});
+await new Promise((res, rej) => {
+  const t = db1.transaction(['articles', 'vocab'], 'readwrite');
+  t.objectStore('articles').put({ id: 'legacy', title: 'Legacy Article', raw: LEGACY,
+    created: Date.now() - 86400000, lastRead: Date.now(), progress: 0, wordCount: 40 });
+  t.objectStore('vocab').put({ word: 'legacy', phonetic: '', translation: 'a. 旧版的',
+    sentence: 'This is a legacy record.', articleId: 'legacy', articleTitle: 'Legacy Article',
+    added: Date.now(), last: 0, due: Date.now(), interval: 0, ease: 2.5, reps: 0, lapses: 0, stage: 'learning' });
+  t.oncomplete = res; t.onerror = () => rej(t.error);
+});
+db1.close();
+rec(true, '已造好一份 v1 结构的旧数据（正文内嵌在 articles 里）');
+
+let upgraded = false;
+try {
+  frame.src = '../index.html?article=legacy';
+  await new Promise(r => { frame.addEventListener('load', () => r(), { once: true }); });
+  await waitFor(() => D().body.dataset.ready === '1', 20000, 'boot');
+  await waitFor(() => D().querySelectorAll('#reader-body .w').length > 10, 20000, 'reader');
+  const body = D().querySelector('#reader-body').textContent;
+  upgraded = /old version kept the whole article text/.test(body) && /still be readable/.test(body);
+  rec(upgraded, '旧数据升级后文章正文仍然能正常打开');
+} catch (e) { rec(false, '旧数据升级后文章正文仍然能正常打开', e.message); }
+
+try {
+  const v = await D().defaultView.indexedDB.databases
+    ? await new Promise(res => { const r = indexedDB.open('lexiread'); r.onsuccess = () => { const d = r.result; res(d.version); d.close(); }; })
+    : null;
+  rec(v === 2, '数据库版本已升到 2', 'version=' + v);
+} catch (e) { rec(false, '数据库版本已升到 2', e.message); }
+
+try {
+  const probe = await new Promise((res, rej) => {
+    const r = indexedDB.open('lexiread');
+    r.onsuccess = () => {
+      const db = r.result;
+      const t = db.transaction(['articles', 'bodies'], 'readonly');
+      const out = {};
+      const a = t.objectStore('articles').get('legacy');
+      const b = t.objectStore('bodies').get('legacy');
+      t.oncomplete = () => { db.close(); res({ article: a.result, body: b.result }); };
+      t.onerror = () => { db.close(); rej(t.error); };
+    };
+    r.onerror = () => rej(r.error);
+  });
+  rec(!!probe.body && typeof probe.body.raw === 'string' && !('raw' in (probe.article || {})),
+    '正文已从 articles 迁到 bodies，元数据里不再有 raw',
+    JSON.stringify({ hasBody: !!probe.body, articleHasRaw: 'raw' in (probe.article || {}) }));
+} catch (e) { rec(false, '正文已从 articles 迁到 bodies，元数据里不再有 raw', e.message); }
+
+/* 迁移后生词本也不能丢 */
+try {
+  D().querySelector('#tabbar .tab[data-tab="vocab"]').click();
+  await waitFor(() => D().querySelector('#vocab-list .card'), 5000, 'vocab');
+  rec(/legacy/.test(D().querySelector('#vocab-list .card').textContent), '升级后生词本数据完整保留');
+} catch (e) { rec(false, '升级后生词本数据完整保留', e.message); }
+
+const pass = results.filter(r => r[0]).length;
+document.getElementById('out').innerHTML = `<h3>${pass}/${results.length}</h3>` +
+  results.map(([ok, n, i]) => `<div class="${ok ? 'pass' : 'fail'}">${ok ? '✓' : '✗'} ${n} ${i}</div>`).join('');
+window.__posted = true;
+try {
+  await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ results, errors: window.__errs || [] }) });
+} catch {}
+</script>
+</body>
+</html>

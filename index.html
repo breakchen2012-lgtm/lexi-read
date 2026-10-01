@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>精读 LexiRead · AI 英文精读与语境记单词</title>
+<meta name="description" content="导入英文文章，点词看 AI 语境讲解、整句翻译与语法拆解，生词连同原句自动进生词本并按遗忘曲线复习。iPhone / iPad / Mac 三端可用。">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="精读">
+<meta name="theme-color" content="#12141c" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f4ef" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+
+<!-- ─────────────  顶栏  ───────────── -->
+<header id="topbar">
+  <button class="icon-btn" id="btn-back" hidden aria-label="返回">‹</button>
+  <div class="tb-title" id="tb-title">精读</div>
+  <div class="tb-right">
+    <span class="sync-dot" id="dict-dot" title="词典状态"></span>
+    <button class="icon-btn" id="btn-theme" aria-label="切换主题">◐</button>
+    <button class="icon-btn" id="btn-settings" aria-label="设置">⚙</button>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- ─────────────  书架  ───────────── -->
+  <section class="view" id="view-library">
+    <div class="hero">
+      <h1>精读 <span class="hero-en">LexiRead</span></h1>
+      <p class="hero-sub">粘贴一篇英文，点词即得 AI 语境讲解 · 生词自动带原句入库</p>
+      <div class="hero-actions">
+        <button class="btn primary" data-action="new-article">＋ 导入文章</button>
+        <button class="btn" data-action="go-vocab">生词本 <b id="lib-due-badge" class="badge" hidden>0</b></button>
+      </div>
+    </div>
+    <div class="stats" id="lib-stats"></div>
+    <h2 class="sec-title">我的文章</h2>
+    <div id="article-list" class="card-list"></div>
+  </section>
+
+  <!-- ─────────────  阅读器  ───────────── -->
+  <section class="view" id="view-reader">
+    <div id="reader-head" class="reader-head">
+      <h1 id="reader-title"></h1>
+      <div class="reader-meta" id="reader-meta"></div>
+      <div class="reader-tools">
+        <button class="tool" data-action="tts-play">🔊 朗读</button>
+        <button class="tool" data-action="tts-stop">⏹ 停止</button>
+        <button class="tool" data-action="toggle-focus">◎ 专注</button>
+        <button class="tool" data-action="reader-settings">Aa 排版</button>
+      </div>
+    </div>
+    <article id="reader-body" class="reader-body"></article>
+    <div id="reader-end" class="reader-end"></div>
+  </section>
+
+  <!-- ─────────────  生词本  ───────────── -->
+  <section class="view" id="view-vocab">
+    <div class="seg" id="vocab-seg">
+      <button class="seg-btn is-on" data-filter="all">全部</button>
+      <button class="seg-btn" data-filter="due">待复习</button>
+      <button class="seg-btn" data-filter="learning">学习中</button>
+      <button class="seg-btn" data-filter="mastered">已掌握</button>
+    </div>
+    <div class="row-actions">
+      <button class="btn primary" data-action="start-review">开始复习 <b id="due-count" class="badge" hidden>0</b></button>
+      <button class="btn" data-action="vocab-export">导出</button>
+    </div>
+    <div id="vocab-list" class="card-list"></div>
+  </section>
+
+  <!-- ─────────────  复习  ───────────── -->
+  <section class="view" id="view-review">
+    <div class="review-wrap">
+      <div class="review-progress"><div id="review-bar"></div></div>
+      <div class="review-card" id="review-card">
+        <div class="rc-word" id="rc-word"></div>
+        <div class="rc-phon" id="rc-phon"></div>
+        <button class="btn" id="rc-speak">🔊 听发音</button>
+        <div class="rc-cloze" id="rc-cloze"></div>
+        <div class="rc-answer" id="rc-answer" hidden></div>
+        <button class="btn primary big" id="rc-reveal">显示答案</button>
+        <div class="rc-grades" id="rc-grades" hidden>
+          <button class="grade g1" data-grade="1">忘记 <i>&lt;1天</i></button>
+          <button class="grade g2" data-grade="2">模糊 <i id="g2i"></i></button>
+          <button class="grade g3" data-grade="3">记得 <i id="g3i"></i></button>
+          <button class="grade g4" data-grade="4">太简单 <i id="g4i"></i></button>
+        </div>
+      </div>
+      <div class="review-foot" id="review-foot"></div>
+    </div>
+  </section>
+
+  <!-- ─────────────  设置  ───────────── -->
+  <section class="view" id="view-settings">
+    <div class="set-group">
+      <h2>AI 引擎</h2>
+      <p class="hint">填写你自己的 API Key，费用直接算在你自己的账号上（DeepSeek 记单词这点用量约几分钱/月）。Key 只存在本机浏览器里，不会上传到任何第三方服务器。</p>
+      <label class="field"><span>接口地址</span>
+        <input id="set-baseurl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://api.deepseek.com">
+      </label>
+      <label class="field"><span>API Key</span>
+        <input id="set-apikey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
+      </label>
+      <label class="field"><span>模型</span>
+        <input id="set-model" type="text" autocomplete="off" spellcheck="false" placeholder="deepseek-chat">
+      </label>
+      <div class="row-actions">
+        <button class="btn primary" data-action="save-ai">保存</button>
+        <button class="btn" data-action="test-ai">测试连接</button>
+      </div>
+      <div class="test-out" id="test-out" hidden></div>
+    </div>
+
+    <div class="set-group">
+      <h2>阅读排版</h2>
+      <label class="field range"><span>字号</span><input id="set-fontsize" type="range" min="14" max="30" step="1"><b id="set-fontsize-v"></b></label>
+      <label class="field range"><span>行距</span><input id="set-lineheight" type="range" min="140" max="260" step="5"><b id="set-lineheight-v"></b></label>
+      <label class="field range"><span>版心</span><input id="set-width" type="range" min="520" max="1000" step="20"><b id="set-width-v"></b></label>
+      <label class="field"><span>字体</span>
+        <select id="set-font">
+          <option value="serif">衬线（易读）</option>
+          <option value="sans">无衬线</option>
+          <option value="mono">等宽</option>
+        </select>
+      </label>
+      <label class="field"><span>主题</span>
+        <select id="set-theme">
+          <option value="auto">跟随系统</option>
+          <option value="light">明亮</option>
+          <option value="sepia">纸黄</option>
+          <option value="dark">暗色</option>
+        </select>
+      </label>
+      <label class="field"><span>点词后自动请求 AI 讲解</span>
+        <input id="set-autoai" type="checkbox">
+      </label>
+    </div>
+
+    <div class="set-group">
+      <h2>朗读</h2>
+      <label class="field"><span>语速</span><input id="set-rate" type="range" min="50" max="150" step="5"><b id="set-rate-v"></b></label>
+      <label class="field"><span>音色</span><select id="set-voice"></select></label>
+    </div>
+
+    <div class="set-group">
+      <h2>数据</h2>
+      <p class="hint" id="storage-hint"></p>
+      <div class="row-actions">
+        <button class="btn" data-action="vocab-export">导出全部数据</button>
+        <button class="btn" data-action="data-import">导入数据</button>
+        <button class="btn danger" data-action="data-wipe">清空所有数据</button>
+      </div>
+      <input type="file" id="file-import" accept="application/json,.json" hidden>
+    </div>
+
+    <div class="set-group">
+      <h2>关于</h2>
+      <p class="hint">
+        精读 LexiRead 是一个纯本地的 PWA：没有服务器、没有账号、没有订阅。
+        在 iPhone / iPad 上用 Safari「分享 → 添加到主屏幕」即成为全屏 App；在 Mac 的 Safari 里「文件 → 添加到程序坞」同样得到独立窗口。
+        <br><br>
+        词典数据来自开源项目 <a href="https://github.com/skywind3000/ECDICT" target="_blank" rel="noopener">ECDICT</a>（MIT）。
+      </p>
+      <div class="row-actions">
+        <button class="btn" data-action="reload-dict">重新加载词典</button>
+        <button class="btn" data-action="check-update">检查更新</button>
+      </div>
+      <p class="hint" id="version-hint"></p>
+    </div>
+  </section>
+
+</main>
+
+<!-- ─────────────  底部导航  ───────────── -->
+<nav id="tabbar">
+  <button class="tab is-on" data-tab="library"><i>📚</i><span>书架</span></button>
+  <button class="tab" data-tab="vocab"><i>🗂</i><span>生词本</span><b class="dot" id="tab-due" hidden></b></button>
+  <button class="tab" data-tab="settings"><i>⚙️</i><span>设置</span></button>
+</nav>
+
+<!-- ─────────────  详情面板（点词 / 句子）  ───────────── -->
+<div id="scrim" hidden></div>
+<aside id="panel" hidden aria-live="polite">
+  <div class="panel-grip"></div>
+  <div class="panel-head">
+    <div class="ph-main">
+      <div class="ph-word" id="ph-word"></div>
+      <div class="ph-sub" id="ph-sub"></div>
+    </div>
+    <div class="ph-actions">
+      <button class="icon-btn" id="ph-speak" aria-label="发音">🔊</button>
+      <button class="icon-btn" id="ph-close" aria-label="关闭">✕</button>
+    </div>
+  </div>
+  <div class="panel-body" id="panel-body"></div>
+  <div class="panel-foot" id="panel-foot"></div>
+</aside>
+
+<!-- ─────────────  模态：新建文章  ───────────── -->
+<div id="modal" hidden>
+  <div class="modal-card" id="modal-card"></div>
+</div>
+
+<div id="toast" hidden></div>
+
+<!-- 拖拽文件到窗口任意位置时的提示 -->
+<div id="drop-hint" hidden>
+  <div class="dh-card">
+    <div class="dh-icon">📥</div>
+    <div class="dh-main">松手即可导入</div>
+    <div class="dh-sub">EPUB · PDF · DOCX · TXT · Markdown · HTML</div>
+  </div>
+</div>
+
+<script type="module" src="./src/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>LexiRead smoke test</title>
+<script>
+  window.__errs = [];
+  window.__posted = false;
+  addEventListener('error', e => window.__errs.push('error: ' + (e.message || e.error)));
+  addEventListener('unhandledrejection', e => window.__errs.push('reject: ' + ((e.reason && e.reason.message) || e.reason)));
+  // 看门狗：模块脚本若中途抛错，这里兜底把已收集到的信息报回去
+  setTimeout(() => {
+    if (window.__posted) return;
+    fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results: window.__partial || [], errors: window.__errs.concat(['watchdog: 测试脚本未跑完']) }) })
+      .catch(() => {});
+  }, 25000);
+</script>
+<style>
+  body{ font: 15px/1.75 ui-monospace, monospace; margin:0; padding:12px; }
+  iframe{ width:390px; height:844px; border:1px solid #ccc; background:#fff; }
+  .pass{ color:#0a0 } .fail{ color:#c00; font-weight:700 }
+  pre{ white-space:pre-wrap }
+</style>
+</head>
+<body>
+<div id="out">running…</div>
+<iframe id="app" src="../index.html"></iframe>
+<script type="module">
+const results = [];
+window.__partial = results;
+const t = (name, fn) => { try { const r = fn(); results.push([r === true, name, r === true ? '' : String(r)]); } catch (e) { results.push([false, name, e.message]); } };
+const ta = async (name, fn) => { try { const r = await fn(); results.push([r === true, name, r === true ? '' : String(r)]); } catch (e) { results.push([false, name, e.message]); } };
+
+/* ── 纯逻辑单元测试 ── */
+const { parseArticle, splitSentences, tokenize } = await import('../src/text.js');
+const srs = await import('../src/srs.js');
+const ui = await import('../src/ui.js');
+const dict = await import('../src/dict.js');
+
+t('splitSentences 基本拆分', () => {
+  const s = splitSentences('He ran fast. She walked home! Did you see it? Yes.');
+  return s.length === 4 || JSON.stringify(s);
+});
+t('splitSentences 不拆 Mr.', () => {
+  const s = splitSentences('Mr. Smith went to Washington. He liked it.');
+  return s.length === 2 || JSON.stringify(s);
+});
+t('splitSentences 处理引号结尾', () => {
+  const s = splitSentences('"Stop!" he shouted. Then he left.');
+  return JSON.stringify(s) === JSON.stringify(['"Stop!"', 'he shouted.', 'Then he left.']) || JSON.stringify(s);
+});
+t('tokenize 保留标点与所有格', () => {
+  const tk = tokenize("It's a well-known fact, isn't it?");
+  const words = tk.filter(x => x.k === 'w').map(x => x.w);
+  return JSON.stringify(words) === JSON.stringify(["it's", 'a', 'well-known', 'fact', "isn't", 'it']) || JSON.stringify(words);
+});
+t('parseArticle 段落与句子', () => {
+  const p = parseArticle('Title Line\n\nFirst sentence here. Second one follows.\n\nAnother paragraph now.', 'x');
+  const got = { b: p.blocks.length, s: p.sentences.length, w: p.words };
+  return (got.b === 3 && got.s === 4 && got.w === 11) || JSON.stringify(got);
+});
+t('parseArticle 合并硬回车折行', () => {
+  const p = parseArticle('This is a hard\nwrapped line that\ncontinues here.\n\nNew para.', 'x');
+  return (p.blocks.length === 2 && p.sentences.length === 2) || JSON.stringify({ b: p.blocks.length, s: p.sentences.length, first: p.sentences[0]?.text });
+});
+t('parseArticle 剥离 HTML', () => {
+  const p = parseArticle('<p>Hello <b>world</b>.</p><p>Second para.</p>', 'x');
+  return (!/</.test(p.sentences.map(s => s.text).join(' '))) || p.sentences.map(s => s.text).join('|');
+});
+t('srs 首次「记得」= 1 天', () => {
+  const c = srs.newCard('test');
+  srs.apply(c, 3, 1000000);
+  return Math.round((c.due - 1000000) / 86400000) === 1 || c.due - 1000000;
+});
+t('srs 连续「记得」间隔递增', () => {
+  const c = srs.newCard('test');
+  const now = 1000000;
+  srs.apply(c, 3, now); const i1 = c.interval;
+  srs.apply(c, 3, now); const i2 = c.interval;
+  srs.apply(c, 3, now); const i3 = c.interval;
+  return (i1 < i2 && i2 < i3) || [i1, i2, i3];
+});
+t('srs 「忘记」重置', () => {
+  const c = srs.newCard('test');
+  srs.apply(c, 3, 1000000); srs.apply(c, 3, 1000000);
+  srs.apply(c, 1, 1000000);
+  return (c.reps === 0 && c.interval === 0 && c.lapses === 1) || JSON.stringify(c);
+});
+t('ui.splitSenses 解析词性', () => {
+  const s = ui.splitSenses('n. 上下文, 背景；vt. 使运行；a. 微妙的');
+  return (s.length === 3 && s[0].pos === 'n.' && s[1].pos === 'vt.' && s[2].pos === 'adj.') || JSON.stringify(s);
+});
+t('ui.clozeSentence 挖空', () => {
+  const out = ui.clozeSentence('The context matters a lot.', 'context');
+  return (/<em>/.test(out) && !/context/.test(out)) || out;
+});
+t('ui.highlightWord 高亮', () => {
+  const out = ui.highlightWord('The context matters.', 'context');
+  return /<em>context<\/em>/.test(out) || out;
+});
+
+/* ── 词典 ── */
+await ta('词典加载', async () => {
+  const m = await dict.load();
+  return m.count > 30000 || JSON.stringify(m);
+});
+t('词典查 context', () => {
+  const r = dict.lookup('context');
+  return !!(r && r.exact && /上下文|语境/.test(r.translation) && r.phonetic) || JSON.stringify(r);
+});
+t('词典还原 mystifying → mystify（词典无此形）', () => {
+  const r = dict.lookup('mystifying');
+  return !!(r && r.matched === 'mystify' && !r.exact) || JSON.stringify(r);
+});
+t('词典还原 outperformed → outperform', () => {
+  const r = dict.lookup('outperformed');
+  return !!(r && r.matched === 'outperform' && !r.exact) || JSON.stringify(r);
+});
+t('词典还原 micromanaging → micromanage', () => {
+  const r = dict.lookup('micromanaging');
+  return !!(r && r.matched === 'micromanage' && !r.exact) || JSON.stringify(r);
+});
+t('词典还原 went → go', () => {
+  const r = dict.lookup('went');
+  return !!(r && r.matched === 'go') || JSON.stringify(r);
+});
+t('词典还原 children → child（同形词给出原形提示）', () => {
+  const r = dict.lookup('children');
+  return !!(r && r.exact && r.lemma === 'child') || JSON.stringify(r);
+});
+t('词典还原 studies → study（原形提示）', () => {
+  const r = dict.lookup('studies');
+  return !!(r && r.exact && r.lemma === 'study') || JSON.stringify(r);
+});
+t('词典还原 stopped → stop（原形提示）', () => {
+  const r = dict.lookup('stopped');
+  return !!(r && r.exact && r.lemma === 'stop') || JSON.stringify(r);
+});
+t('词典对正常词不误报原形', () => {
+  const r = dict.lookup('context');
+  return !!(r && r.exact && !r.lemma) || JSON.stringify(r);
+});
+t('词典查不存在的词返回 null', () => dict.lookup('zzzqqxx') === null);
+
+/* ── IndexedDB ── */
+const db = await import('../src/db.js');
+await ta('IndexedDB 读写', async () => {
+  await db.clear('kv');
+  await db.put('kv', { k: 'test', v: 42 });
+  const r = await db.get('kv', 'test');
+  return r && r.v === 42 ? true : JSON.stringify(r);
+});
+await ta('vocab 存入并读回', async () => {
+  await db.clear('vocab');
+  await db.put('vocab', { word: 'ephemeral', reps: 2, due: Date.now() });
+  const all = await db.all('vocab');
+  await db.clear('vocab');
+  return all.length === 1 && all[0].word === 'ephemeral' ? true : JSON.stringify(all);
+});
+
+/* ── 布局检测：在 iframe 里检查横向溢出 ── */
+const frame = document.getElementById('app');
+await new Promise(r => {
+  frame.addEventListener('load', () => r(), { once: true });
+  setTimeout(r, 6000);
+});
+await new Promise(r => setTimeout(r, 3000));
+let overflow = [];
+let dims = {};
+try {
+  const d = frame.contentDocument, w = frame.contentWindow;
+  dims = { inner: w.innerWidth, scroll: d.documentElement.scrollWidth, body: d.body.scrollWidth };
+  const cw = d.documentElement.clientWidth;
+  d.querySelectorAll('body *').forEach(el => {
+    if (el.closest('#panel') || el.closest('#modal')) return;
+    const cs = w.getComputedStyle(el);
+    if (cs.display === 'none' || cs.position === 'fixed') return;
+    const r = el.getBoundingClientRect();
+    if (r.width > 0 && (r.right > cw + 1 || r.left < -1)) {
+      overflow.push(`${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${el.className && typeof el.className === 'string' ? '.' + el.className.split(' ').join('.') : ''} L${Math.round(r.left)} R${Math.round(r.right)}`);
+    }
+  });
+} catch (e) { overflow = ['ERR ' + e.message]; }
+results.push([overflow.length === 0 && dims.scroll <= dims.inner, '无横向溢出 @390px', JSON.stringify({ dims, overflow: overflow.slice(0, 8) })]);
+
+/* ── 输出 ── */
+const pass = results.filter(r => r[0]).length;
+document.getElementById('out').innerHTML =
+  `<h3>${pass}/${results.length} 通过</h3>` +
+  results.map(([ok, name, info]) =>
+    `<div class="${ok ? 'pass' : 'fail'}">${ok ? '✓' : '✗'} ${name}${info ? ' <span style="color:#888">→ ' + info.replace(/</g, '&lt;') + '</span>' : ''}</div>`
+  ).join('');
+document.title = `SMOKE ${pass}/${results.length}`;
+
+try {
+  window.__posted = true;
+  await fetch('/__results', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ results, errors: window.__errs || [] }),
+  });
+} catch (e) { /* 忽略 */ }
+</script>
+</body>
+</html>

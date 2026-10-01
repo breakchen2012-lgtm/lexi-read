@@ -1,0 +1,11 @@
+# 构建产物与临时文件
+build/
+*.log
+.DS_Store
+node_modules/
+
+# 不要把任何密钥提交进来
+.env
+.env.*
+*.local
+secrets.json

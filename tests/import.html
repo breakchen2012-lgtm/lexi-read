@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>LexiRead import test</title>
+<script>
+  window.__errs = [];
+  window.__posted = false;
+  addEventListener('error', e => window.__errs.push('error: ' + (e.message || e.error)));
+  addEventListener('unhandledrejection', e => window.__errs.push('reject: ' + ((e.reason && e.reason.message) || e.reason)));
+  setTimeout(() => {
+    if (window.__posted) return;
+    fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results: window.__partial || [], errors: window.__errs.concat(['watchdog: import 测试未跑完']) }) }).catch(() => {});
+  }, 45000);
+</script>
+<style>
+  body{ font: 15px/1.75 ui-monospace, monospace; margin:0; padding:12px; }
+  .pass{ color:#0a0 } .fail{ color:#c00; font-weight:700 }
+</style>
+</head>
+<body>
+<div id="out">running…</div>
+<script type="module">
+const results = [];
+window.__partial = results;
+const rec = (ok, name, info = '') => results.push([!!ok, name, info]);
+
+const { importFile, importEpub, importDocx, importPdf, htmlToText, decodeText } = await import('../src/importers.js');
+const { unzip } = await import('../src/unzip.js');
+const { parseArticle } = await import('../src/text.js');
+
+async function fixture(name, type = '') {
+  const res = await fetch('./fixtures/' + name, { cache: 'no-store' });
+  if (!res.ok) throw new Error('拿不到样张 ' + name + '：HTTP ' + res.status);
+  const buf = await res.arrayBuffer();
+  return new File([buf], name, { type });
+}
+const text = r => (r.text || '').trim();
+
+/* ── 纯函数 ── */
+try {
+  const h = htmlToText('<p>Hello &amp; welcome</p><scr' + 'ipt>bad()</scr' + 'ipt><p>Second&nbsp;line</p>');
+  rec(/Hello & welcome/.test(h) && /Second line/.test(h) && !/bad\(\)/.test(h), 'htmlToText 去标签 / 解实体 / 清脚本', JSON.stringify(h));
+} catch (e) { rec(false, 'htmlToText 去标签 / 解实体 / 清脚本', e.message); }
+
+try {
+  const gbk = await fixture('sample-gbk.txt');
+  const r = await importFile(gbk);
+  rec(/GBK 编码的说明/.test(r.text) && /Reading widely rewires/.test(r.text), 'GBK 编码文本自动回退解码', r.text.slice(0, 30));
+} catch (e) { rec(false, 'GBK 编码文本自动回退解码', e.message); }
+
+/* ── ZIP 底层 ── */
+try {
+  const f = await fixture('sample.epub');
+  const zip = await unzip(await f.arrayBuffer());
+  const names = zip.names();
+  const mime = await zip.text('mimetype');
+  const ch1 = await zip.text('OEBPS/ch1.xhtml');
+  rec(names.includes('META-INF/container.xml') && mime === 'application/epub+zip' && /isolated words/.test(ch1),
+    'unzip 能列出条目并解出内容（含 STORED 与 DEFLATE）',
+    JSON.stringify({ n: names.length, mime }));
+} catch (e) { rec(false, 'unzip 能列出条目并解出内容（含 STORED 与 DEFLATE）', e.message); }
+
+/* ── EPUB ── */
+try {
+  const f = await fixture('sample.epub');
+  const r = await importEpub(await f.arrayBuffer(), f.name);
+  const ok = r.title === 'A Book About Reading'
+    && /Chapter One: Why Context Wins/.test(r.text)
+    && /Chapter Two: Reading Widely/.test(r.text)
+    && /outperform those who cram/.test(r.text)
+    && !/<p>|<\/h1>/.test(r.text);
+  rec(ok, 'EPUB：按 spine 顺序抽出两章正文 + 书名', JSON.stringify({ title: r.title, len: r.text.length }));
+} catch (e) { rec(false, 'EPUB：按 spine 顺序抽出两章正文 + 书名', e.message); }
+
+try {
+  const f = await fixture('sample.epub');
+  const r = await importEpub(await f.arrayBuffer(), f.name);
+  const p = parseArticle(r.text, r.title);
+  rec(p.blocks.length >= 4 && p.sentences.length >= 5 && p.words > 70,
+    'EPUB 正文能被阅读器正确切段分句', JSON.stringify({ b: p.blocks.length, s: p.sentences.length, w: p.words }));
+} catch (e) { rec(false, 'EPUB 正文能被阅读器正确切段分句', e.message); }
+
+/* ── DOCX ── */
+try {
+  const f = await fixture('sample.docx');
+  const r = await importDocx(await f.arrayBuffer(), f.name);
+  const ok = r.title === 'A Word Document About Reading'
+    && /Vocabulary is remembered best/.test(r.text)
+    && /twenty flashcards/.test(r.text)
+    && !/w:document|<w:p/.test(r.text);
+  rec(ok, 'DOCX：读出标题与全部段落', JSON.stringify({ title: r.title, len: r.text.length }));
+} catch (e) { rec(false, 'DOCX：读出标题与全部段落', e.message); }
+
+/* ── PDF（手写、标准字体） ── */
+try {
+  const f = await fixture('paper.pdf', 'application/pdf');
+  const r = await importPdf(await f.arrayBuffer(), f.name);
+  const ok = /Reading in Context/.test(r.text)
+    && /memorizing isolated words/.test(r.text)
+    && /outperform those who cram/.test(r.text);
+  rec(ok, 'PDF：两页文本全部提取（含跨行拼接）', JSON.stringify(r.text.slice(0, 60)));
+} catch (e) { rec(false, 'PDF：两页文本全部提取（含跨行拼接）', e.message); }
+
+/* ── PDF（cupsfilter 真实排版输出） ── */
+try {
+  const f = await fixture('cups.pdf', 'application/pdf');
+  const r = await importPdf(await f.arrayBuffer(), f.name);
+  rec(/vocabulary|resilient|Reading/i.test(r.text) && r.text.length > 100,
+    'PDF：真实排版器输出的 PDF 也能提取', JSON.stringify(r.text.slice(0, 50)));
+} catch (e) { rec(false, 'PDF：真实排版器输出的 PDF 也能提取', e.message); }
+
+/* ── 统一入口 + 错误提示 ── */
+try {
+  const cases = [
+    ['sample.txt', 'The Quiet Power of Context', /isolated words/],
+    ['sample.html', 'A Short Test Article', /exposure & repetition/],
+    ['sample.epub', 'A Book About Reading', /Chapter Two/],
+    ['sample.docx', 'A Word Document About Reading', /twenty flashcards/],
+    ['paper.pdf', 'Reading in Context', /outperform/],
+  ];
+  const bad = [];
+  for (const [name, wantTitle, wantText] of cases) {
+    const f = await fixture(name);
+    const r = await importFile(f);
+    if (!wantText.test(r.text)) bad.push(name + ':正文');
+    if (name !== 'paper.pdf' && r.title !== wantTitle) bad.push(name + ':标题=' + r.title);
+  }
+  rec(bad.length === 0, 'importFile 按扩展名分发全部格式', bad.join(', '));
+} catch (e) { rec(false, 'importFile 按扩展名分发全部格式', e.message); }
+
+try {
+  const errs = [];
+  for (const [name, type, re] of [
+    ['book.mobi', '', /Kindle|mobi/i],
+    ['old.doc', '', /\.doc\b|另存为/],
+    ['scan.png', 'image/png', /OCR|图片/],
+    ['pack.zip', 'application/zip', /压缩包/],
+  ]) {
+    const f = new File([new Uint8Array([1, 2, 3, 4])], name, { type });
+    try { await importFile(f); errs.push(name + ':没报错'); }
+    catch (e) { if (!re.test(e.message)) errs.push(name + ':提示怪=' + e.message); }
+  }
+  rec(errs.length === 0, '不支持的格式给出可操作的中文提示', errs.join(' | '));
+} catch (e) { rec(false, '不支持的格式给出可操作的中文提示', e.message); }
+
+try {
+  const f = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0])], 'broken.epub');
+  try { await importFile(f); rec(false, '损坏的 EPUB 不会让页面崩掉', '居然没报错'); }
+  catch (e) { rec(/ZIP|压缩|目录|太小/.test(e.message), '损坏的 EPUB 不会让页面崩掉', e.message); }
+} catch (e) { rec(false, '损坏的 EPUB 不会让页面崩掉', e.message); }
+
+/* ── 输出 ── */
+const pass = results.filter(r => r[0]).length;
+document.getElementById('out').innerHTML = `<h3>${pass}/${results.length} 通过</h3>` +
+  results.map(([ok, name, info]) =>
+    `<div class="${ok ? 'pass' : 'fail'}">${ok ? '✓' : '✗'} ${name}${info ? ' <span style="color:#888">→ ' + String(info).replace(/</g, '&lt;') + '</span>' : ''}</div>`).join('');
+window.__posted = true;
+try {
+  await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ results, errors: window.__errs || [] }) });
+} catch {}
+</script>
+</body>
+</html>

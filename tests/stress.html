@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>LexiRead stress</title>
+<script>
+  window.__errs = [];
+  window.__posted = false;
+  addEventListener('error', e => window.__errs.push('error: ' + (e.message || e.error)));
+  setTimeout(() => {
+    if (window.__posted) return;
+    fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results: window.__partial || [], errors: window.__errs.concat(['watchdog']) }) }).catch(() => {});
+  }, 170000);
+</script>
+<style>body{font:15px/1.7 ui-monospace,monospace;margin:0;padding:12px}
+iframe{width:390px;height:844px;border:1px solid #ccc}
+.pass{color:#0a0}.fail{color:#c00;font-weight:700}</style>
+</head>
+<body>
+<div id="out">running…</div>
+<iframe id="app"></iframe>
+<script type="module">
+const results = [];
+window.__partial = results;
+const rec = (ok, name, info = '') => { results.push([!!ok, name, info]); };
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const frame = document.getElementById('app');
+const D = () => frame.contentDocument, W = () => frame.contentWindow;
+const waitFor = async (fn, ms, label) => {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) { try { const v = fn(); if (v) return v; } catch {} await wait(60); }
+  throw new Error('超时: ' + label);
+};
+
+/* 先把大书塞进 IndexedDB */
+const raw = await (await fetch('./fixtures/bigbook.txt', { cache: 'no-store' })).text();
+const words = (raw.match(/[A-Za-z][A-Za-z'’-]*/g) || []).length;
+
+const seedDb = await new Promise((res, rej) => {
+  const r = indexedDB.open('lexiread', 2);          // 与 App 同版本，避免升级被阻塞
+  r.onupgradeneeded = () => {
+    const db = r.result;
+    for (const [n, k] of [['articles', 'id'], ['bodies', 'id'], ['vocab', 'word'], ['aica', 'k'], ['kv', 'k']]) {
+      if (!db.objectStoreNames.contains(n)) db.createObjectStore(n, { keyPath: k });
+    }
+  };
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+});
+await new Promise((res, rej) => {
+  const t = seedDb.transaction(['articles', 'bodies'], 'readwrite');
+  t.objectStore('articles').put({ id: 'stress', title: 'Stress Book',
+    created: Date.now(), lastRead: Date.now(), progress: 0, wordCount: words });
+  t.objectStore('bodies').put({ id: 'stress', raw });
+  t.oncomplete = res; t.onerror = () => rej(t.error);
+});
+seedDb.close();                                      // 关键：关掉连接，否则会阻塞 App 打开数据库
+localStorage.setItem('lexiread.settings', JSON.stringify({ fontSize: 20, lineHeight: 190, width: 720,
+  font: 'serif', theme: 'light', autoAI: false, ttsRate: 95, ttsVoice: '' }));
+
+const t0 = performance.now();
+frame.src = '../index.html?article=stress&perf=1';
+await new Promise(r => { frame.addEventListener('load', () => r(), { once: true }); });
+await waitFor(() => D().body.dataset.ready === '1', 60000, 'boot');
+const tReady = performance.now();
+
+let words_ = 0;
+try {
+  await waitFor(() => {
+    words_ = D().querySelectorAll('#reader-body .w').length;
+    return words_ > 100;
+  }, 120000, 'reader render');
+} catch (e) { /* 超时也继续报告 */ }
+const tRender = performance.now();
+
+await wait(500);
+const nodes = D().querySelectorAll('*').length;
+const spans = D().querySelectorAll('#reader-body .w').length;
+const sents = D().querySelectorAll('#reader-body .sent').length;
+
+/* 滚动一次，量一下布局代价 */
+const tScroll0 = performance.now();
+D().scrollingElement.scrollTop = 30000;
+D().body.offsetHeight;
+D().scrollingElement.scrollTop = 90000;
+D().body.offsetHeight;
+const tScroll = performance.now() - tScroll0;
+
+const heap = performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : -1;
+
+const bm = D().defaultView.__bm || {};
+const appOpenMs = bm.render_end || Math.round(tRender - t0);
+rec(words_ > 100 && appOpenMs < 8000, '大书能迅速打开（应用自身计时 < 8s）', JSON.stringify({
+  words: words.toLocaleString(), visibleSpans: words_, spans, sents, nodes, app_open_ms: appOpenMs,
+  marks: bm,
+  read_ms: bm.loaded && bm.libshell ? bm.loaded - bm.libshell : null,
+  render_ms: bm.render_end && bm.render_start ? bm.render_end - bm.render_start : null,
+  host_ms: Math.round(tRender - t0), scroll_ms: Math.round(tScroll), heap_mb: heap,
+}));
+rec(nodes < 60000, '初始 DOM 节点数保持很小（懒渲染生效）', JSON.stringify({ nodes, spans }));
+rec(true, '启动打点（ms，相对 iframe 启动）', JSON.stringify(D().defaultView.__bm || {}));
+
+/* 交互仍然可用：点首屏的一个词 */
+let clickOk = false;
+try {
+  const el = D().querySelector('#reader-body .w');
+  const t = performance.now();
+  el.click();
+  await waitFor(() => !D().querySelector('#panel').hidden, 8000, 'panel');
+  clickOk = performance.now() - t < 3000 && (D().querySelector('#ph-word').textContent || '').length > 1;
+  D().querySelector('#ph-close').click();
+} catch (e) { rec(false, '大书里点词面板仍能秒开', e.message); }
+rec(clickOk, '大书首屏点词面板秒开');
+
+/* 滚到很后面，那一段也要能被展开并点词 */
+try {
+  D().scrollingElement.scrollTop = D().scrollingElement.scrollHeight * 0.6;
+  await wait(1200);
+  const spansLate = D().querySelectorAll('#reader-body .w').length;
+  const late = D().querySelectorAll('#reader-body .w');
+  const el = late[late.length - 1];
+  el.click();
+  await waitFor(() => !D().querySelector('#panel').hidden, 8000, 'panel-late');
+  const head = D().querySelector('#ph-word').textContent;
+  rec(spansLate > 200 && spansLate < 80000 && !!head,
+    '滚动到 60% 位置后仍能展开并点词', JSON.stringify({ spansLate, head }));
+} catch (e) { rec(false, '滚动到 60% 位置后仍能展开并点词', e.message); }
+
+/* 朗读定位：从视口位置算出的起始句应该落在附近段落 */
+try {
+  const before = D().scrollingElement.scrollTop;
+  const blocks = Array.from(D().querySelectorAll('#reader-body [data-bi]'));
+  let from = 0;
+  for (const b of blocks) { if (b.getBoundingClientRect().bottom > 110) { from = +b.dataset.sid0 || 0; break; } }
+  const sents = D().querySelectorAll('#reader-body .sent').length;
+  rec(from > 100, '朗读能从当前视口位置继续（不是从头开始）', JSON.stringify({ from, sents, scroll: Math.round(before) }));
+} catch (e) { rec(false, '朗读能从当前视口位置继续（不是从头开始）', e.message); }
+
+const pass = results.filter(r => r[0]).length;
+document.getElementById('out').innerHTML = `<h3>${pass}/${results.length}</h3>` +
+  results.map(([ok, n, i]) => `<div class="${ok ? 'pass' : 'fail'}">${ok ? '✓' : '✗'} ${n} ${i}</div>`).join('');
+window.__posted = true;
+try {
+  await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ results, errors: window.__errs || [] }) });
+} catch {}
+</script>
+</body>
+</html>

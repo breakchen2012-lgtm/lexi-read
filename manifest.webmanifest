@@ -1,0 +1,28 @@
+{
+  "name": "精读 LexiRead · AI 英文精读",
+  "short_name": "精读",
+  "description": "导入英文文章，点词看 AI 语境讲解、整句翻译与语法拆解，生词连同原句自动进生词本并按遗忘曲线复习。",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#f6f4ef",
+  "theme_color": "#4f6ef7",
+  "categories": ["education", "productivity", "books"],
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "./icons/icon-1024.png", "sizes": "1024x1024", "type": "image/png", "purpose": "any" }
+  ],
+  "shortcuts": [
+    {
+      "name": "生词本",
+      "short_name": "生词本",
+      "url": "./index.html?tab=vocab"
+    }
+  ]
+}
