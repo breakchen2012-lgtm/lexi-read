@@ -23,7 +23,7 @@
 <header id="topbar">
   <button class="icon-btn" id="btn-back" hidden aria-label="返回">‹</button>
   <div class="tb-title" id="tb-title">精读</div>
-  <div class="tb-right">
+  <div class="tb-right" id="tb-right">
     <span class="sync-dot" id="dict-dot" title="词典状态"></span>
     <button class="icon-btn sync-btn" id="btn-sync" hidden aria-label="同步">☁</button>
     <button class="icon-btn" id="btn-theme" aria-label="切换主题">◐</button>
@@ -32,6 +32,24 @@
 </header>
 
 <main id="main">
+
+  <!-- ─────────────  欢迎 / 注册  ───────────── -->
+  <section class="view" id="view-welcome">
+    <div class="wc-wrap">
+      <div class="wc-hero">
+        <h1>精读 <span class="hero-en">LexiRead</span></h1>
+        <p>AI 英文精读 · 语境记单词 · 三端同步</p>
+      </div>
+      <div id="welcome-card"></div>
+      <ul class="wc-points">
+        <li><b>内置 3.7 万条离线词典</b>　音标、释义、词频、考纲标签，不花一分钱</li>
+        <li><b>拖入 EPUB / PDF / DOCX 直接读</b>　自动按章节抽正文</li>
+        <li><b>点词出 AI 语境讲解</b>　用自己的 API Key，一次不到一分钱</li>
+        <li><b>生词带原句进本子</b>　按遗忘曲线提醒你复习</li>
+      </ul>
+      <button class="btn wc-skip" data-action="welcome-skip">先不用，直接开始 →</button>
+    </div>
+  </section>
 
   <!-- ─────────────  书架  ───────────── -->
   <section class="view" id="view-library">
@@ -51,17 +69,32 @@
   <!-- ─────────────  阅读器  ───────────── -->
   <section class="view" id="view-reader">
     <div id="reader-head" class="reader-head">
-      <h1 id="reader-title"></h1>
+      <div class="rh-bar">
+        <button class="rh-nav" data-action="page-prev" aria-label="上一页">‹</button>
+        <div class="rh-titles" data-action="toggle-tools">
+          <h1 id="reader-title"></h1>
+          <div class="rh-sub" id="reader-sub"></div>
+        </div>
+        <button class="rh-nav" data-action="page-next" aria-label="下一页">›</button>
+      </div>
       <div class="reader-meta" id="reader-meta"></div>
-      <div class="reader-tools">
+      <div class="reader-tools" id="reader-tools">
         <button class="tool" data-action="tts-play">🔊 朗读</button>
         <button class="tool" data-action="tts-stop">⏹ 停止</button>
+        <button class="tool" data-action="article-guide">✨ 导读</button>
         <button class="tool" data-action="toggle-focus">◎ 专注</button>
         <button class="tool" data-action="reader-settings">Aa 排版</button>
       </div>
     </div>
-    <article id="reader-body" class="reader-body" lang="en"></article>
+    <div id="reader-viewport">
+      <article id="reader-body" class="reader-body" lang="en"></article>
+    </div>
     <div id="reader-end" class="reader-end"></div>
+    <div id="reader-foot" hidden>
+      <button class="rf-nav" data-action="page-prev" aria-label="上一页">‹</button>
+      <span id="reader-page">1 / 1</span>
+      <button class="rf-nav" data-action="page-next" aria-label="下一页">›</button>
+    </div>
   </section>
 
   <!-- ─────────────  生词本  ───────────── -->
@@ -150,6 +183,18 @@
           <option value="light">明亮</option>
           <option value="sepia">纸黄</option>
           <option value="dark">暗色</option>
+        </select>
+      </label>
+      <label class="field"><span>阅读方式</span>
+        <select id="set-mode">
+          <option value="page">翻页（像书一样）</option>
+          <option value="scroll">滚动</option>
+        </select>
+      </label>
+      <label class="field"><span>分栏</span>
+        <select id="set-columns">
+          <option value="auto">自动（宽屏两栏）</option>
+          <option value="one">始终一栏</option>
         </select>
       </label>
       <label class="field"><span>段落</span>

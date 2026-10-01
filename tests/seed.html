@@ -17,13 +17,17 @@ import * as ai from '../src/ai.js';
 
 const ARTICLE = `The Quiet Power of Context
 
-Most people learn vocabulary by memorizing isolated words. Yet research shows that a word is far easier to retain when it is encountered inside a meaningful sentence.
+Most people learn vocabulary by memorizing isolated words. Yet research shows that a word is far easier to retain when it is encountered inside a meaningful sentence. The list gives you the meaning; the sentence gives you the memory.
 
-Consider the word "resilient". A dictionary tells you it means "able to recover quickly". But when you meet it in a story about a city rebuilding after a flood, the word acquires weight and colour that no definition can supply.
+Consider the word "resilient". A dictionary tells you it means "able to recover quickly". But when you meet it in a story about a city rebuilding after a flood, the word acquires weight and colour that no definition can supply. You remember the flood, the rubble, the slow return of ordinary life — and the word comes back with them.
 
 This is why reading widely matters. Every sentence you finish quietly rewires the way you remember language. Learners who read a little every day consistently outperform those who cram once a week.
 
-The effect compounds. A page a day is roughly three hundred and sixty five pages a year, which is several novels, and the words you meet there arrive already attached to a situation, a voice and a feeling. That attachment is what makes them stick.`;
+The effect compounds. A page a day is roughly three hundred and sixty five pages a year, which is several novels, and the words you meet there arrive already attached to a situation, a voice and a feeling. That attachment is what makes them stick.
+
+There is a second gain, less obvious but just as useful. Reading teaches you grammar without ever naming it. You meet the past perfect in a story about someone who had already left, and the tense stops being a rule and becomes a fact about the world.
+
+So the advice is unglamorous. Choose something slightly too easy. Read it in small pieces. Look up only the words that block your understanding, and let the rest wash past you. The ones that matter will come back, and the next time they do you will already know them.`;
 
 const DEMO_AI = `【本句释义】adj. 有韧性的；能迅速恢复的（这里形容城市灾后恢复能力强）
 【为什么】后半句 a city rebuilding after a flood 给出了「遭受重创后重新站起来」的语境线索，与 resilient 的核心义「弹回原状」吻合。
@@ -90,7 +94,8 @@ await tx('aica', s => s.put({ k: 'ai:' + ai.cacheKeyFor('w', ['resilient', sent]
 localStorage.setItem('lexiread.ai', JSON.stringify({ baseUrl: 'https://api.deepseek.com', apiKey: 'sk-demo', model: 'deepseek-chat' }));
 localStorage.setItem('lexiread.settings', JSON.stringify({
   fontSize: 20, lineHeight: 195, width: 680, font: 'serif', theme: 'light', autoAI: true,
-  ttsRate: 95, ttsVoice: '', paraStyle: 'book', justify: true,
+  ttsRate: 95, ttsVoice: '', paraStyle: 'web', justify: true,
+  readingMode: 'page', columns: 'auto',
 }));
 
 document.getElementById('out').textContent = 'seeded ' + VOCAB.length + ' words, article ' + parsed.words + ' words';

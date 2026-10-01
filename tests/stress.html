@@ -57,7 +57,8 @@ await new Promise((res, rej) => {
 });
 seedDb.close();                                      // 关键：关掉连接，否则会阻塞 App 打开数据库
 localStorage.setItem('lexiread.settings', JSON.stringify({ fontSize: 20, lineHeight: 190, width: 720,
-  font: 'serif', theme: 'light', autoAI: false, ttsRate: 95, ttsVoice: '' }));
+  font: 'serif', theme: 'light', autoAI: false, ttsRate: 95, ttsVoice: '',
+  readingMode: 'scroll', paraStyle: 'web', justify: true }));
 
 const t0 = performance.now();
 frame.src = '../index.html?article=stress&perf=1';

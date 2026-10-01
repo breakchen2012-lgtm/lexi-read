@@ -19,8 +19,10 @@ const SET_KEY = 'lexiread.settings';
 const DEFAULT_SETTINGS = {
   fontSize: 20, lineHeight: 195, width: 680, font: 'serif',
   theme: 'auto', autoAI: true, ttsRate: 95, ttsVoice: '',
-  paraStyle: 'book',      // 书籍：首行缩进、段间紧凑
+  paraStyle: 'web',       // 与 SentiRead 一致：段间空行、不缩进
   justify: true,          // 两端对齐 + 自动断词
+  readingMode: 'page',    // page=翻页（像书一样） scroll=滚动
+  columns: 'auto',        // auto=宽屏两栏 one=始终一栏
 };
 let settings = (() => {
   try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SET_KEY) || '{}') }; }
@@ -45,6 +47,7 @@ function applySettings() {
   document.documentElement.dataset.theme = t;
   document.documentElement.dataset.para = settings.paraStyle === 'web' ? 'web' : 'book';
   document.documentElement.dataset.justify = settings.justify ? '1' : '0';
+  document.documentElement.dataset.mode = settings.readingMode === 'scroll' ? 'scroll' : 'page';
   tts.configure({ rate: settings.ttsRate / 100, voiceURI: settings.ttsVoice });
 }
 
@@ -92,15 +95,29 @@ async function ensureDict() {
 function setView(name, opts = {}) {
   S.view = name;
   $$('.view').forEach(v => v.classList.toggle('is-on', v.id === 'view-' + name));
-  const tabMap = { library: 'library', reader: 'library', vocab: 'vocab', review: 'vocab', settings: 'settings' };
+  const tabMap = { welcome: 'library', library: 'library', reader: 'library', vocab: 'vocab', review: 'vocab', settings: 'settings' };
+  const tb = $('#tabbar');
+  if (tb) tb.style.display = name === 'welcome' ? 'none' : '';
   $$('#tabbar .tab').forEach(t => t.classList.toggle('is-on', t.dataset.tab === tabMap[name]));
   $('#btn-back').hidden = !(name === 'reader' || name === 'review');
   document.body.classList.toggle('focus-mode', false);
   $$('.tool').forEach(t => t.classList.remove('is-on'));
 
-  const titles = { library: '精读', reader: S.cur?.article.title || '阅读', vocab: '生词本', review: '复习', settings: '设置' };
+  const titles = { welcome: '精读', library: '精读', reader: S.cur?.article.title || '阅读', vocab: '生词本', review: '复习', settings: '设置' };
+  const tbTitle = $('#tb-title'), back = $('#btn-back'), tr = $('#tb-right');
+  if (name === 'welcome') {
+    if (tbTitle) tbTitle.textContent = '精读 LexiRead';
+    if (back) back.hidden = true;
+    if (tr) tr.hidden = true;
+  } else if (tr) {
+    tr.hidden = false;
+  }
   $('#tb-title').textContent = titles[name] || '精读';
 
+  document.body.classList.toggle('paged', name === 'reader' && isPaged());
+  const rf = $('#reader-foot');
+  if (rf) rf.hidden = !(name === 'reader' && isPaged());
+  if (name === 'welcome') renderWelcome();
   if (name === 'library') renderLibrary();
   if (name === 'vocab') renderVocab();
   if (name === 'settings') { renderSettings(); renderSync(); }
@@ -185,10 +202,154 @@ async function openArticle(id) {
 
   renderReader();
   setView('reader');
+  if (isPaged()) {
+    requestAnimationFrame(() => relayoutPages(false));
+  } else {
+    requestAnimationFrame(() => {
+      const h = document.documentElement.scrollHeight - window.innerHeight;
+      if (h > 0 && article.progress > 0.005) window.scrollTo({ top: article.progress * h });
+    });
+  }
+}
+
+/* ══════════════════════════  翻页引擎（像书一样）  ══════════════════════════ */
+
+const PG = { page: 0, total: 1, step: 0, w: 0, cols: 1, headings: [] };
+const COL_GAP = 56;                 // 两栏之间的中缝
+const MIN_TWO_COL = 720;            // 视口宽于这个才分两栏
+
+const isPaged = () => settings.readingMode !== 'scroll';
+
+/** 视口高度 = 窗口 − 顶栏 − 页眉 − 页脚 */
+function sizeViewport() {
+  const vp = $('#reader-viewport');
+  if (!vp) return 0;
+  const top = $('#topbar');
+  const head = $('#reader-head');
+  const foot = $('#reader-foot');
+  const topH = top ? top.offsetHeight : 0;
+  const headH = head ? head.offsetHeight : 0;
+  const footH = foot && !foot.hidden ? foot.offsetHeight : 0;
+  const h = Math.max(200, window.innerHeight - topH - headH - footH - 6);
+  vp.style.height = h + 'px';
+  return h;
+}
+
+/** 按视口算栏宽，并把正文排成横向的栏 */
+function applyColumns() {
+  const vp = $('#reader-viewport');
+  const body = $('#reader-body');
+  if (!vp || !body) return null;
+  // 页边距按屏宽自适应：手机窄一点、宽屏像书页一样留白多一些
+  const vw = window.innerWidth;
+  const padx = vw >= 1000 ? 46 : vw >= 700 ? 34 : 22;
+  vp.style.setProperty('--padx', padx + 'px');
+  const cs = getComputedStyle(vp);
+  const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) || 0;
+  if (!vp.clientWidth) return null;                    // 还没显示，等下一帧
+  const W = Math.max(200, vp.clientWidth - padX);      // 正文可用的净宽
+  const two = settings.columns !== 'one' && W >= MIN_TWO_COL;
+  const cols = two ? 2 : 1;
+  // 栏间距永远保留：否则单栏时右边会漏出下一条栏的边缘
+  const gap = COL_GAP;
+  const colW = two ? Math.floor((W - gap) / 2) : W;
+
+  body.style.columnWidth = colW + 'px';
+  body.style.columnGap = gap + 'px';
+  body.style.width = W + 'px';
+  body.style.height = '100%';
+
+  PG.cols = cols;
+  PG.w = W;
+  PG.step = W + gap;                 // 翻一页前进的距离
+  return { W, gap };
+}
+
+/** 量出总页数、记录每个标题所在的横向位置 */
+function measurePages() {
+  const body = $('#reader-body');
+  if (!body) return;
+  const total = body.scrollWidth;
+  PG.total = Math.max(1, Math.round((total + COL_GAP) / Math.max(1, PG.step)));
+  // 章节标题的横向位置，用来做页眉副标题
+  const bodyRect = body.getBoundingClientRect();
+  PG.headings = [];
+  for (const el of $$('#reader-body [data-bi]')) {
+    if (el.tagName !== 'H2') continue;
+    PG.headings.push({
+      x: el.getBoundingClientRect().left - bodyRect.left,
+      text: (el.textContent || '').trim(),
+    });
+  }
+}
+
+function updatePageChrome() {
+  const pgEl = $('#reader-page');
+  if (pgEl) pgEl.textContent = `${PG.page + 1} / ${PG.total}`;
+  $$('[data-action="page-prev"]').forEach(b => b.toggleAttribute('disabled', PG.page <= 0));
+  $$('[data-action="page-next"]').forEach(b => b.toggleAttribute('disabled', PG.page >= PG.total - 1));
+  const sub = $('#reader-sub');
+  if (sub) {
+    const x = PG.page * PG.step + 4;
+    let cur = '';
+    for (const h of PG.headings) { if (h.x <= x) cur = h.text; else break; }
+    sub.textContent = cur && cur !== (S.cur?.parsed.title || '') ? cur : '';
+  }
+}
+
+function goPage(p, smooth = true) {
+  if (!isPaged() || !S.cur) return;
+  const body = $('#reader-body');
+  if (!body) return;
+  PG.page = Math.max(0, Math.min(PG.total - 1, p));
+  body.style.transition = smooth ? '' : 'none';
+  body.style.transform = `translateX(${-PG.page * PG.step}px)`;
+  if (!smooth) requestAnimationFrame(() => { body.style.transition = ''; });
+  updatePageChrome();
+  if (S.cur.article) {
+    S.cur.article.progress = PG.total > 1 ? PG.page / (PG.total - 1) : 0;
+    S.cur.article.updated = touch();
+    persistArticle(S.cur.article);
+    scheduleSync();
+  }
+}
+
+/** 重排 + 重新分页（首次渲染、改设置、转屏都走这里） */
+function relayoutPages(keepRatio = true, retry = 0) {
+  if (!isPaged() || !S.cur) return;
+  const ratio = keepRatio
+    ? (PG.total > 1 ? PG.page / (PG.total - 1) : 0)
+    : (S.cur.article.progress || 0);
+  sizeViewport();
+  if (!applyColumns()) {
+    if (retry < 8) requestAnimationFrame(() => relayoutPages(keepRatio, retry + 1));
+    return;
+  }
   requestAnimationFrame(() => {
-    const h = document.documentElement.scrollHeight - window.innerHeight;
-    if (h > 0 && article.progress > 0.005) window.scrollTo({ top: article.progress * h });
+    measurePages();
+    const target = Math.round(ratio * Math.max(0, PG.total - 1));
+    goPage(target, false);
   });
+}
+
+/** 从当前视口位置朗读（翻页模式下就是当前页第一句） */
+function firstSentenceOnScreen() {
+  if (!S.cur) return 0;
+  if (isPaged()) {
+    const body = $('#reader-body');
+    if (!body) return 0;
+    const rect = body.getBoundingClientRect();
+    const cut = PG.page * PG.step;
+    for (const el of $$('#reader-body [data-bi]')) {
+      const x = el.getBoundingClientRect().left - rect.left;
+      if (x >= cut - 2) return +el.dataset.sid0 || 0;
+    }
+    return 0;
+  }
+  for (const el of $$('#reader-body [data-bi]')) {
+    if (el.getBoundingClientRect().bottom > 110) return +el.dataset.sid0 || 0;
+  }
+  return 0;
 }
 
 const LAZY_WORD_LIMIT = 5000;      // 超过这么多词就改成「滚到哪儿渲染哪儿」
@@ -273,7 +434,9 @@ function renderReader() {
         readerObserver.unobserve(el);
         tokenizeBlock(el, parsed.blocks[+el.dataset.bi]);
       }
-    }, { rootMargin: '1500px 0px 1500px 0px' });
+    }, isPaged()
+        ? { rootMargin: '0px 1400px 0px 1400px' }
+        : { rootMargin: '1500px 0px 1500px 0px' });
     for (const el of els) readerObserver.observe(el);
     requestAnimationFrame(() => {
       // 首屏 + 附近立刻展开，避免用户还没滚动就点不到词
@@ -288,6 +451,7 @@ function renderReader() {
   }
 
   if (window.__bm) window.__bm.render_end = Math.round(performance.now());
+  document.body.classList.toggle('paged', isPaged());
   $('#reader-end').innerHTML = `
     <div style="margin-bottom:14px">— 已读完 · 共 ${parsed.words} 词 —</div>
     <div class="row-actions" style="justify-content:center">
@@ -295,12 +459,19 @@ function renderReader() {
       <button class="btn" data-action="back-top">↑ 回到顶部</button>
     </div>
     <div id="guide-out" class="ai-out" style="text-align:left;margin-top:18px"></div>`;
+  const foot = $('#reader-foot');
+  if (foot) foot.hidden = !isPaged();
+  if (!isPaged()) {
+    const body = $('#reader-body');
+    if (body) { body.style.transform = 'none'; body.style.columnWidth = ''; body.style.columnGap = ''; body.style.width = ''; }
+  }
+  // 注意：分页要等视图真正显示后再算宽度，见 openArticle
 }
 
 /* 阅读进度 */
 let progTimer = null;
 function onScroll() {
-  if (S.view !== 'reader' || !S.cur) return;
+  if (S.view !== 'reader' || !S.cur || isPaged()) return;
   clearTimeout(progTimer);
   progTimer = setTimeout(() => {
     const h = document.documentElement.scrollHeight - window.innerHeight;
@@ -754,22 +925,92 @@ async function runSync(manual = true) {
   }
 }
 
+const ONBOARD_KEY = 'lexiread.onboarded';
+
+/** 第一屏：突出邮箱注册，说明同一邮箱全端同步 */
+function renderWelcome(errMsg) {
+  const box = $('#welcome-card');
+  if (!box) return;
+  const signed = sync.isSignedIn();
+  const cfg = sync.getConfig();
+
+  if (signed) {
+    const email = sync.currentEmail();
+    box.className = 'wc-card';
+    box.innerHTML = `
+      <h2>已登录</h2>
+      <p class="lead">当前账号 <b>${esc(email)}</b><br>文章、生词本、阅读进度、复习记录和排版设置会在这台设备与其它设备之间自动同步。</p>
+      <div class="wc-row">
+        <button class="btn primary" data-action="welcome-go">开始阅读</button>
+        <button class="btn" data-action="sync-now">立即同步</button>
+      </div>`;
+    return;
+  }
+
+  if (!sync.isConfigured()) {
+    box.className = 'wc-card';
+    box.innerHTML = `
+      <h2>开启跨设备同步</h2>
+      <p class="lead">用一个邮箱，在 iPhone / iPad / Mac 之间同步全部内容。
+      同步用的是你自己的 Supabase 免费项目，不用信用卡，数据只有你能读写。</p>
+      <ol class="sync-steps">
+        <li>去 <a href="https://supabase.com" target="_blank" rel="noopener">supabase.com</a> 注册并新建项目</li>
+        <li>左侧 <b>SQL Editor</b> → 执行仓库里的 <code>docs/supabase.sql</code></li>
+        <li><b>Project Settings → API</b> 里复制 Project URL 和 anon public key，填到下面</li>
+      </ol>
+      <div class="sync-field"><span>Project URL</span>
+        <input id="sy-url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://abcdefghijk.supabase.co" value="${esc(cfg.url)}"></div>
+      <div class="sync-field"><span>anon public key</span>
+        <input id="sy-key" type="text" autocomplete="off" spellcheck="false" placeholder="eyJhbGciOi..." value="${esc(cfg.anonKey)}"></div>
+      <div class="wc-row">
+        <button class="btn primary" data-action="sync-save-cfg">保存并继续</button>
+      </div>
+      <p class="wc-note">部署时把这两个值填进 <code>config.js</code>，所有设备打开就自动配好，不用每台填一次。</p>`;
+    return;
+  }
+
+  box.className = 'wc-card';
+  box.innerHTML = `
+    <h2>用邮箱注册，开启三端同步</h2>
+    <p class="lead">同一个邮箱，文章、生词本、阅读进度、复习记录和排版设置
+    在 iPhone / iPad / Mac 之间自动同步。</p>
+    <div class="sync-field"><span>邮箱</span>
+      <input id="sy-email" type="text" inputmode="email" autocomplete="username" spellcheck="false"
+             placeholder="you@example.com" value="${esc(cfg.email)}"></div>
+    <div class="sync-field"><span>密码（至少 6 位）</span>
+      <input id="sy-pass" type="password" autocomplete="current-password" placeholder="••••••"></div>
+    ${errMsg ? `<div class="err-box" style="margin-bottom:12px">${esc(errMsg)}</div>` : ''}
+    <div class="wc-row">
+      <button class="btn primary" data-action="sync-signup">注册新账号</button>
+      <button class="btn" data-action="sync-signin">登录</button>
+    </div>
+    <p class="wc-note">同步服务是你自己的 Supabase 免费项目，数据只有你能读写。Key 和密码不会上传到任何第三方服务器。</p>`;
+}
+
+function goWelcome() {
+  renderWelcome();
+  setView('welcome');
+}
+
 async function doAuth(mode) {
   const email = ($('#sy-email')?.value || '').trim();
   const pass = $('#sy-pass')?.value || '';
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { renderSync('邮箱格式不对'); return; }
   if (pass.length < 6) { renderSync('密码至少要 6 位'); return; }
-  const btns = $$('#sync-body .btn');
-  btns.forEach(b => { b.disabled = true; });
-  const old = $('#sync-body').innerHTML;
+  const onWelcome = S.view === 'welcome';
+  const host = onWelcome ? $('#welcome-card') : $('#sync-body');
+  const repaint = (msg) => (onWelcome ? renderWelcome(msg) : renderSync(msg));
+  $$('#sync-body .btn, #welcome-card .btn').forEach(b => { b.disabled = true; });
+  const old = host.innerHTML;
   try {
     if (mode === 'up') {
       const r = await sync.signUp(email, pass);
       if (r.needConfirm) {
-        $('#sync-body').innerHTML = `<div class="na-status is-ok">✓ 注册成功！去 <b>${esc(email)}</b> 收一封确认邮件，
-          点里面的链接后再回来登录。<br><span style="color:var(--fg-dim)">（如果不想验证邮箱：Supabase 控制台 →
-          Authentication → Sign In / Providers → Email → 关掉 Confirm email，以后注册就立即生效）</span></div>
-          <div class="sync-actions"><button class="btn" data-action="sync-reload-ui">我已确认，去登录</button></div>`;
+        host.innerHTML = `<h2>还差一步</h2>
+          <p class="lead">确认邮件已经发到 <b>${esc(email)}</b>，点里面的链接后再回来登录。</p>
+          <p class="wc-note">不想每次验证邮箱？在 Supabase 控制台 →
+          Authentication → Sign In / Providers → Email，把 <b>Confirm email</b> 关掉，以后注册就立即生效。</p>
+          <div class="wc-row"><button class="btn primary" data-action="sync-reload-ui">我已确认，去登录</button></div>`;
         return;
       }
       toast('注册成功，已登录');
@@ -777,11 +1018,12 @@ async function doAuth(mode) {
       await sync.signIn(email, pass);
       toast('登录成功');
     }
-    renderSync();
+    repaint();
+    if (!onWelcome) renderWelcome();
     runSync(true);
   } catch (e) {
-    $('#sync-body').innerHTML = old;
-    renderSync(e.message);
+    host.innerHTML = old;
+    repaint(e.message);
   }
 }
 
@@ -861,7 +1103,9 @@ function renderSettings() {
   $('#set-width-v').textContent = settings.width + 'px';
   $('#set-font').value = settings.font;
   $('#set-theme').value = settings.theme;
-  $('#set-para').value = settings.paraStyle || 'book';
+  $('#set-mode').value = settings.readingMode || 'page';
+  $('#set-columns').value = settings.columns || 'auto';
+  $('#set-para').value = settings.paraStyle || 'web';
   $('#set-justify').checked = settings.justify !== false;
   $('#set-autoai').checked = !!settings.autoAI;
   $('#set-rate').value = settings.ttsRate;
@@ -1104,6 +1348,9 @@ const ACTIONS = {
     setView('library');
   },
   'back-top': () => window.scrollTo({ top: 0, behavior: 'smooth' }),
+  'page-prev': () => goPage(PG.page - 1),
+  'page-next': () => goPage(PG.page + 1),
+  'toggle-tools': () => document.body.classList.toggle('tools-open'),
   'toggle-focus': (btn) => {
     document.body.classList.toggle('focus-mode');
     btn.classList.toggle('is-on', document.body.classList.contains('focus-mode'));
@@ -1143,9 +1390,13 @@ const ACTIONS = {
   'retry-ai': () => { const l = S.lastAI; if (l) runAI(l.el, l.key, l.messages); },
   'reveal': () => revealReview(),
   'article-guide': async () => {
-    const el = $('#guide-out'); if (!el) return;
-    const { article, parsed } = S.cur;
-    runAI(el, ai.cacheKeyFor('a', [article.id]), ai.articlePrompt({
+    const { article, parsed } = S.cur || {};
+    if (!article) return;
+    openModal(`<h3>AI 导读</h3>
+      <div class="sub">${esc(parsed.title)}</div>
+      <div id="guide-out" class="ai-out"></div>
+      <div class="modal-foot"><button class="btn" data-action="modal-close">关闭</button></div>`);
+    runAI($('#guide-out'), ai.cacheKeyFor('a', [article.id]), ai.articlePrompt({
       title: parsed.title, text: parsed.sentences.map(s => s.text).join(' '),
     }));
   },
@@ -1165,7 +1416,15 @@ const ACTIONS = {
     sync.saveConfig({ url: '', anonKey: '', session: null, email: '' });
     renderSync();
   },
-  'sync-reload-ui': () => renderSync(),
+  'sync-reload-ui': () => (S.view === 'welcome' ? renderWelcome() : renderSync()),
+  'welcome-skip': () => {
+    localStorage.setItem(ONBOARD_KEY, '1');
+    setView('library');
+  },
+  'welcome-go': () => {
+    localStorage.setItem(ONBOARD_KEY, '1');
+    setView('library');
+  },
   'sync-signin': () => doAuth('in'),
   'sync-signup': () => doAuth('up'),
   'sync-now': () => runSync(true),
@@ -1256,6 +1515,25 @@ function wire() {
     else if (p?.surface) tts.say(p.surface, settings.ttsRate / 100);
   });
 
+  // 翻页模式下左右滑动
+  const vp = $('#reader-viewport');
+  if (vp) {
+    let sx = 0, sy = 0, tracking = false;
+    vp.addEventListener('touchstart', e => {
+      if (!isPaged() || e.touches.length !== 1) return;
+      sx = e.touches[0].clientX; sy = e.touches[0].clientY; tracking = true;
+    }, { passive: true });
+    vp.addEventListener('touchend', e => {
+      if (!tracking) return;
+      tracking = false;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - sx, dy = t.clientY - sy;
+      if (Math.abs(dx) > 46 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+        goPage(PG.page + (dx < 0 ? 1 : -1));
+      }
+    }, { passive: true });
+  }
+
   // 面板下拉关闭（移动端）
   let dragY = null;
   $('#panel').addEventListener('touchstart', e => {
@@ -1312,7 +1590,14 @@ function wire() {
 
   // 键盘：复习时按空格显示答案，1-4 评分
   document.addEventListener('keydown', e => {
-    if (S.view !== 'review' || isModalOpen()) return;
+    if (isModalOpen()) return;
+    if (S.view === 'reader' && isPaged()) {
+      if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); goPage(PG.page + 1); return; }
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); goPage(PG.page - 1); return; }
+      if (e.key === 'ArrowDown') { e.preventDefault(); goPage(PG.page + PG.cols); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); goPage(PG.page - PG.cols); return; }
+    }
+    if (S.view !== 'review') return;
     if (e.key === ' ') { e.preventDefault(); revealReview(); }
     if (['1', '2', '3', '4'].includes(e.key) && S.review.revealed) gradeReview(+e.key);
     if (e.key === 'Escape') closePanel();
@@ -1355,6 +1640,7 @@ function wire() {
       settings[key] = +el.value * scale;
       $(id + '-v').textContent = fmt(+el.value);
       saveSettings();
+      if (S.view === 'reader' && isPaged()) { clearTimeout(window.__pgTimer); window.__pgTimer = setTimeout(() => relayoutPages(false), 120); }
     });
   };
   bindRange('#set-fontsize', 'fontSize', v => v + 'px');
@@ -1363,6 +1649,17 @@ function wire() {
   bindRange('#set-rate', 'ttsRate', v => (v / 100).toFixed(2) + '×');
   $('#set-font').addEventListener('change', e => { settings.font = e.target.value; saveSettings(); });
   $('#set-theme').addEventListener('change', e => { settings.theme = e.target.value; saveSettings(); });
+  $('#set-mode').addEventListener('change', e => {
+    settings.readingMode = e.target.value; saveSettings();
+    document.body.classList.toggle('paged', S.view === 'reader' && isPaged());
+    const foot = $('#reader-foot');
+    if (foot) foot.hidden = !(S.view === 'reader' && isPaged());
+    if (S.view === 'reader') { if (isPaged()) relayoutPages(false); else { const b = $('#reader-body'); if (b) { b.style.transform = 'none'; b.style.columnWidth = ''; b.style.columnGap = ''; b.style.width = ''; b.style.height = ''; } window.scrollTo(0, 0); } }
+  });
+  $('#set-columns').addEventListener('change', e => {
+    settings.columns = e.target.value; saveSettings();
+    if (S.view === 'reader' && isPaged()) relayoutPages(false);
+  });
   $('#set-para').addEventListener('change', e => { settings.paraStyle = e.target.value; saveSettings(); });
   $('#set-justify').addEventListener('change', e => { settings.justify = e.target.checked; saveSettings(); });
   $('#set-autoai').addEventListener('change', e => { settings.autoAI = e.target.checked; saveSettings(); });
@@ -1393,14 +1690,31 @@ function wire() {
           const el = $(`.sent[data-sid="${sid}"]`);
           if (el) {
             el.classList.add('speaking');
-            const r = el.getBoundingClientRect();
-            if (r.top < 80 || r.bottom > window.innerHeight - 40) {
-              el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            if (isPaged()) {
+              // 翻页模式：读到哪一栏就翻到哪一页
+              const body = $('#reader-body');
+              if (body) {
+                const x = el.getBoundingClientRect().left - body.getBoundingClientRect().left;
+                const p = Math.floor((x + 4) / Math.max(1, PG.step));
+                if (p !== PG.page) goPage(p, false);
+              }
+            } else {
+              const r = el.getBoundingClientRect();
+              if (r.top < 80 || r.bottom > window.innerHeight - 40) {
+                el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+              }
             }
           }
         }
       }
     },
+  });
+
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    if (S.view !== 'reader' || !isPaged()) return;
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => relayoutPages(true), 180);
   });
 
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
@@ -1417,11 +1731,7 @@ function startReading() {
   const items = S.cur.parsed.sentences.map(s => ({ sid: s.sid, text: s.text }));
   if (!items.length) { toast('这篇文章没有可朗读的内容'); return; }
   if (!tts.supported()) { toast('当前浏览器不支持语音朗读'); return; }
-  // 从当前视口位置开始读（用段落定位，懒渲染下也准）
-  let from = 0;
-  for (const el of $$('#reader-body [data-bi]')) {
-    if (el.getBoundingClientRect().bottom > 110) { from = +el.dataset.sid0 || 0; break; }
-  }
+  const from = firstSentenceOnScreen();
   tts.configure({ rate: settings.ttsRate / 100, voiceURI: settings.ttsVoice });
   tts.play(items, from);
   toast('开始朗读，可再点一次停止');
@@ -1484,6 +1794,7 @@ function applyDeepLink() {
   try { q = new URLSearchParams(location.search); } catch { return; }
   const art = q.get('article');
   const word = q.get('word');
+  if (art || q.get('tab') || q.get('review')) localStorage.setItem(ONBOARD_KEY, '1');
   if (art) {
     const a = S.articles.find(x => x.id === art);
     if (a) {
@@ -1535,12 +1846,15 @@ async function boot() {
   wire();
   setDot('', '离线词典未加载');
   $('#article-list').innerHTML = '<div class="empty">正在读取本地数据…</div>';
-  setView('library');
+  const firstRun = !localStorage.getItem(ONBOARD_KEY);
+  try { setView(firstRun ? 'welcome' : 'library'); }
+  catch (e) { console.error('初始视图渲染失败', e); setView('library'); }
   if (window.__bm) window.__bm.libshell = Math.round(performance.now());
 
   try { await loadAll(); } catch (e) { toast('读取本地数据失败：' + e.message, 4000); }
   if (window.__bm) window.__bm.loaded = Math.round(performance.now());
   renderLibrary();
+  if (firstRun && !sync.isSignedIn()) renderWelcome();
   document.body.dataset.ready = '1';
   db.persist();
 

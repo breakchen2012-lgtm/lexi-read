@@ -361,19 +361,19 @@ try {
   const keys = await W().caches.keys();
   let shell = {};
   try {
-    const c = await W().caches.open('lexiread-v5');
+    const c = await W().caches.open('lexiread-v6');
     for (const u of ['./index.html', './src/app.js', './styles.css', './icons/icon-192.png']) {
       shell[u] = !!(await c.match(u));
     }
   } catch (e) { shell = { err: e.message }; }
-  const ok = ctrl && keys.includes('lexiread-v5') && Object.values(shell).every(Boolean);
+  const ok = ctrl && keys.includes('lexiread-v6') && Object.values(shell).every(Boolean);
   rec(ok, 'Service Worker 接管并缓存应用外壳（离线可用）',
     JSON.stringify({ ctrl, keys, shell }).slice(0, 160));
 } catch (e) { rec(false, 'Service Worker 接管并缓存应用外壳（离线可用）', e.message); }
 
 /* 22 ── 词典已缓存，可离线查词 */
 try {
-  const c = await W().caches.open('lexiread-v5');
+  const c = await W().caches.open('lexiread-v6');
   const hit = await c.match(new URL('./data/dict.json', W().location.href).href);
   const size = hit ? (await hit.clone().text()).length : 0;
   rec(!!hit && size > 1000000, '离线词典已进入缓存', JSON.stringify({ size }));

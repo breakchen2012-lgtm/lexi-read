@@ -118,6 +118,18 @@ SHOTS = [
     dict(name='05-review', url=f'{BASE}/index.html?review=1', w=402, h=874,
          wait="(document.querySelector('.rc-word')||{}).textContent", settle=500, dpr=2, theme='light',
          actions="document.querySelector('[data-action=\"reveal\"]').click()"),
+    dict(name='08-paged-ipad', url=f'{BASE}/index.html?article=demo-article', w=1024, h=768,
+         wait="document.querySelectorAll('#reader-body .w').length>60 && document.querySelector('#reader-page').textContent!=='1 / 1'",
+         settle=900, dpr=2, theme='light'),
+    dict(name='09-paged-phone', url=f'{BASE}/index.html?article=demo-article', w=402, h=874,
+         wait="document.querySelectorAll('#reader-body .w').length>60 && document.querySelector('#reader-page').textContent!=='1 / 1'",
+         settle=900, dpr=2, theme='light'),
+    dict(name='10-welcome', url=f'{BASE}/index.html', w=402, h=874,
+         wait="document.querySelector('#welcome-card') && document.querySelector('#welcome-card').children.length>0 && !!document.querySelector('#sy-email')",
+         settle=800, dpr=2, theme='light',
+         setup="localStorage.removeItem('lexiread.onboarded');"
+               "localStorage.setItem('lexiread.sync', JSON.stringify({url:'https://demo.supabase.co',"
+               "anonKey:'demo-anon-key-0123456789abcdef',autoSync:false}))"),
     dict(name='07-import', url=f'{BASE}/index.html', w=402, h=874,
          wait="document.body.dataset.ready==='1'", settle=1100, dpr=2, theme='light',
          actions="document.querySelector('[data-action=\"new-article\"]').click()"),
@@ -163,11 +175,18 @@ def main():
         sid = ws.cmd('Target.attachToTarget', {'targetId': tid, 'flatten': True})['sessionId']
         ws.cmd('Page.enable', session=sid)
         ws.cmd('Runtime.enable', session=sid)
+        # 先访问一次清缓存页：把旧的 Service Worker 注销掉，
+        # 否则改了代码截图还是旧缓存（SW 会一直拦截同源的请求）
+        ws.cmd('Page.navigate', {'url': f'{BASE}/tests/nocache.html'}, session=sid)
+        time.sleep(0.9)
         ws.cmd('Emulation.setDeviceMetricsOverride',
                {'width': spec['w'], 'height': spec['h'],
                 'deviceScaleFactor': spec.get('dpr', 1), 'mobile': spec['w'] < 700}, session=sid)
         # 先在本源写入主题，避免截图时闪一下
-        ws.cmd('Page.navigate', {'url': spec['url']}, session=sid)
+        # 截图一律绕过 Service Worker，避免拿到旧缓存（不然改了代码截出来还是旧的）
+        raw_url = spec['url']
+        nav_url = raw_url + ('&' if '?' in raw_url else '?') + 'nosw=1'
+        ws.cmd('Page.navigate', {'url': nav_url}, session=sid)
         time.sleep(1.0)
         if spec.get('setup'):
             ws.cmd('Runtime.evaluate', {'expression': spec['setup']}, session=sid)
