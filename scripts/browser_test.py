@@ -96,6 +96,62 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(body)
         self.close_connection = True
 
+    def _gw(self):
+        """模拟各种「不听话」的 OpenAI 兼容网关，用来验证客户端的兼容处理"""
+        path = urlparse(self.path).path
+        n = path.split('/')[1]              # __gw1 / __gw2 ...
+        has_v1 = path.startswith('/' + n + '/v1/')
+        cors = self._cors()
+
+        def send(code, body, ctype):
+            self.send_response(code)
+            for k, v in cors.items():
+                self.send_header(k, v)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            self.close_connection = True
+
+        if n == '__gw1':
+            # 地址少了 /v1 时「友好地」返回 200 + HTML 首页
+            if not has_v1:
+                return send(200, b'<!doctype html><html><head><title>New API</title></head>'
+                                 b'<body>gateway landing page</body></html>', 'text/html; charset=utf-8')
+            chunks = ['网关一', '正常', '工作']
+            out = b''
+            for c in chunks:
+                j = json.dumps({'choices': [{'delta': {'content': c}}]}, ensure_ascii=False)
+                out += ('data: ' + j + '\n\n').encode()
+            out += b'data: [DONE]\n\n'
+            return send(200, out, 'text/event-stream; charset=utf-8')
+
+        if n == '__gw2':
+            # 忽略了 stream=true，直接返回一整段 JSON
+            body = json.dumps({'choices': [{'message': {'role': 'assistant', 'content': '网关二正常'}}]},
+                              ensure_ascii=False).encode()
+            return send(200, body, 'application/json')
+
+        if n == '__gw3':
+            body = json.dumps({'error': {'message': 'invalid api key'}}).encode()
+            return send(401, body, 'application/json')
+
+        if n == '__gw4':
+            # 200 但没有任何正文
+            return send(200, b'data: [DONE]\n\n', 'text/event-stream; charset=utf-8')
+
+        if n == '__gw6':
+            # 两个候选地址都返回网页
+            return send(200, b'<!doctype html><html><body>not an api at all</body></html>',
+                        'text/html; charset=utf-8')
+
+        if n == '__gw5':
+            # 把 SSE 当成 text/plain 返回
+            j = json.dumps({'choices': [{'delta': {'content': '网关五正常'}}]}, ensure_ascii=False)
+            return send(200, ('data: ' + j + '\n\ndata: [DONE]\n\n').encode(), 'text/plain; charset=utf-8')
+
+        return send(404, b'{}', 'application/json')
+
     def _sb(self, method):
         """返回 True 表示这个请求已经被模拟 Supabase 处理掉了"""
         parsed = urlparse(self.path)
@@ -251,6 +307,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         self._body = self._read_body()
         if self._sb('POST'):
+            return
+        if self.path.startswith('/__gw'):
+            self._gw()
             return
         if self.path.startswith('/__mock'):
             raw = self._body

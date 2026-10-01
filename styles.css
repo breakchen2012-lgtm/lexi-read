@@ -11,8 +11,8 @@
   --ff-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --ff: var(--ff-serif);
   --fs: 20px;
-  --lh: 1.9;
-  --measure: 720px;
+  --lh: 1.95;
+  --measure: 680px;
   --accent: #4f6ef7;
   --accent-soft: rgba(79,110,247,.14);
   --mark: rgba(255,214,0,.42);
@@ -172,8 +172,26 @@ a{ color: var(--accent); }
 .reader-body{
   max-width: var(--measure); margin:0 auto; padding: 6px 20px 12px;
   font-family: var(--ff); font-size: var(--fs); line-height: var(--lh);
+  font-kerning: normal;
+  font-variant-ligatures: common-ligatures;
+  text-rendering: optimizeLegibility;
+  hanging-punctuation: first last;
+  -webkit-hanging-punctuation: first last;
 }
-.reader-body p{ margin: 0 0 1.05em; text-align: left; hyphens:auto; }
+/* 两端对齐 + 自动断词（书籍的关键：右边缘齐整但不出现字距河流） */
+html[data-justify="1"] .reader-body{ text-align: justify; text-justify: inter-word;
+  hyphens: auto; -webkit-hyphens: auto; }
+html[data-justify="0"] .reader-body{ text-align: left; hyphens: manual; -webkit-hyphens: manual; }
+
+/* 段落：书籍式（首行缩进、段间紧凑） */
+html[data-para="book"] .reader-body p{ text-indent: 1.6em; margin: 0 0 .2em; }
+/* 章节标题后的第一段、引文后的第一段不缩进 —— 纸质书的惯例 */
+html[data-para="book"] .reader-body h2.art-h + p,
+html[data-para="book"] .reader-body blockquote + p,
+html[data-para="book"] .reader-body > p:first-child{ text-indent: 0; }
+/* 段落：网页式（不缩进、段间空行） */
+html[data-para="web"] .reader-body p{ text-indent: 0; margin: 0 0 1.05em; }
+
 .reader-body .sent{ border-radius:4px; transition: background .2s; }
 .reader-body .sent.speaking{ background: var(--accent-soft); box-shadow: 0 0 0 4px var(--accent-soft); }
 .reader-body .w{ cursor: pointer; border-radius:4px;
@@ -182,8 +200,15 @@ a{ color: var(--accent); }
 .reader-body .w.saved{ box-shadow: inset 0 -2px 0 var(--accent); }
 .reader-body .w.active{ background: var(--accent); color:#fff; }
 .reader-body .w.hit{ background: var(--mark); }
-.reader-body h2.art-h{ font-size: calc(var(--fs) * 1.12); margin: 1.4em 0 .6em; font-family: var(--ff-sans); }
-.reader-body blockquote{ margin:1em 0; padding-left:14px; border-left:3px solid var(--line); color: var(--fg-dim); }
+.reader-body h2.art-h{ font-family: var(--ff); font-size: calc(var(--fs) * 1.24);
+  font-weight: 600; line-height: 1.35; letter-spacing: -.012em;
+  margin: 2.1em 0 .9em; padding-bottom: .3em;
+  border-bottom: 1px solid var(--line); }
+.reader-body h2.art-h:first-child{ margin-top: .2em; }
+.reader-body blockquote{ margin: 1.15em 0; padding: .1em 0 .1em 1.05em;
+  border-left: 3px solid var(--line); color: var(--fg-dim); font-style: italic; }
+html[data-para="book"] .reader-body blockquote{ text-indent: 0; }
+html[data-para="book"] .reader-body blockquote + p{ text-indent: 0; }
 .reader-end{ max-width: var(--measure); margin:0 auto; padding: 30px 20px 70px;
   text-align:center; color: var(--fg-faint); font-size:13.5px; }
 body.focus-mode #topbar, body.focus-mode #tabbar, body.focus-mode .reader-meta,

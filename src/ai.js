@@ -20,70 +20,64 @@ export function setConfig(cfg) {
 }
 export function hasKey() { return !!getConfig().apiKey.trim(); }
 
-function endpoint(base) {
-  const b = String(base || DEFAULTS.baseUrl).trim().replace(/\/+$/, '');
-  if (/\/chat\/completions$/.test(b)) return b;
-  return b + '/chat/completions';
-}
-
 export class AIError extends Error {
   constructor(msg, kind) { super(msg); this.kind = kind || 'error'; }
 }
 
-/**
- * 流式对话
- * @param {{messages:Array, onDelta?:Function, signal?:AbortSignal, temperature?:number, maxTokens?:number}} o
- */
-export async function streamChat(o) {
-  const cfg = getConfig();
-  if (!cfg.apiKey.trim()) throw new AIError('还没有填写 API Key，去「设置 → AI 引擎」填一个。', 'nokey');
+/** 把用户填的地址展开成候选的 chat/completions 接口列表。
+ *  OpenAI 兼容网关有的要 /v1 有的不要，这里两个都试，省得用户自己猜。 */
+export function candidateUrls(base) {
+  const b = String(base || DEFAULTS.baseUrl).trim().replace(/\/+$/, '');
+  if (/\/chat\/completions$/.test(b)) return [b];
+  const list = [b + '/chat/completions'];
+  if (!/\/v\d+$/.test(b)) list.push(b + '/v1/chat/completions');
+  return list;
+}
 
-  const body = {
-    model: cfg.model || DEFAULTS.model,
-    messages: o.messages,
-    stream: true,
-    temperature: o.temperature ?? 0.3,
-    max_tokens: o.maxTokens ?? 900,
-  };
-
-  let res;
-  try {
-    res = await fetch(endpoint(cfg.baseUrl), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + cfg.apiKey.trim(),
-      },
-      body: JSON.stringify(body),
-      signal: o.signal,
-    });
-  } catch (e) {
-    if (e && e.name === 'AbortError') throw e;
-    throw new AIError('网络请求失败：' + (e && e.message ? e.message : e) +
-      '。请检查网络，或确认接口地址是否需要代理。', 'network');
+/** 从各种可能的返回结构里抠出正文 */
+function extractText(obj) {
+  if (!obj) return '';
+  const c = obj.choices && obj.choices[0];
+  if (c) {
+    if (typeof c.text === 'string' && c.text) return c.text;
+    if (c.message && typeof c.message.content === 'string') return c.message.content;
+    if (c.delta && typeof c.delta.content === 'string') return c.delta.content;
   }
+  if (typeof obj.output_text === 'string') return obj.output_text;
+  if (typeof obj.content === 'string') return obj.content;
+  return '';
+}
 
-  if (!res.ok) {
-    let detail = '';
-    try {
-      const t = await res.text();
-      try {
-        const j = JSON.parse(t);
-        detail = j.error?.message || j.message || t.slice(0, 300);
-      } catch { detail = t.slice(0, 300); }
-    } catch {}
-    const hint = res.status === 401 ? '（API Key 不正确）'
-      : res.status === 402 ? '（余额不足，去平台充值）'
-      : res.status === 429 ? '（请求太频繁，稍后再试）'
-      : res.status === 404 ? '（接口地址或模型名不对）' : '';
-    throw new AIError(`接口返回 ${res.status} ${hint} ${detail}`, 'http');
+function parseSSE(raw) {
+  let out = '';
+  for (const line of String(raw).split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith(':') || !t.startsWith('data:')) continue;
+    const d = t.slice(5).trim();
+    if (!d || d === '[DONE]') continue;
+    try { out += extractText(JSON.parse(d)); } catch { /* 分片不完整，跳过 */ }
+  }
+  return out;
+}
+
+/** 读一次响应体，流式和非流式都能处理 */
+async function readAnswer(res, onDelta) {
+  const ctype = (res.headers.get('content-type') || '').toLowerCase();
+
+  // 网关忽略了 stream=true，直接回了一整段 JSON
+  if (!ctype.includes('event-stream')) {
+    const raw = await res.text();
+    let text = '';
+    try { text = extractText(JSON.parse(raw)); } catch { text = parseSSE(raw); }
+    if (!text) text = parseSSE(raw);
+    if (text && onDelta) onDelta(text, text);
+    return text;
   }
 
   const reader = res.body.getReader();
   const dec = new TextDecoder('utf-8');
   let buf = '';
   let full = '';
-
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -97,15 +91,109 @@ export async function streamChat(o) {
       const data = line.slice(5).trim();
       if (data === '[DONE]') return full;
       try {
-        const j = JSON.parse(data);
-        const d = j.choices?.[0]?.delta?.content
-          ?? j.choices?.[0]?.message?.content
-          ?? '';
-        if (d) { full += d; if (o.onDelta) o.onDelta(d, full); }
+        const piece = extractText(JSON.parse(data));
+        if (piece) { full += piece; if (onDelta) onDelta(piece, full); }
       } catch { /* 忽略不完整分片 */ }
     }
   }
   return full;
+}
+
+/** 记住哪个候选地址是通的，后续请求不用再试 */
+const resolved = new Map();
+const cacheKeyOf = cfg => cfg.baseUrl + '|' + cfg.model;
+
+/** 某一个地址的一次尝试 */
+async function tryOnce(url, cfg, body, signal, onDelta) {
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + cfg.apiKey.trim(),
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw e;
+    throw new AIError('网络请求失败：' + (e && e.message ? e.message : e) +
+      '。请检查网络，或确认接口地址是否需要代理。', 'network');
+  }
+
+  const ctype = (res.headers.get('content-type') || '').toLowerCase();
+
+  // 关键：很多网关地址写错时会「友好地」返回 200 + 一个 HTML 首页，
+  // 以前会把网页当数据解析、最后报「没有返回内容」，非常难排查。
+  if (ctype.includes('text/html')) {
+    return { html: true, status: res.status };
+  }
+
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const t = await res.text();
+      try {
+        const j = JSON.parse(t);
+        detail = j.error?.message || j.message || t.slice(0, 300);
+      } catch { detail = t.slice(0, 300); }
+    } catch {}
+    const hint = res.status === 401 ? '（API Key 不正确）'
+      : res.status === 402 ? '（余额不足，去平台充值）'
+      : res.status === 403 ? '（这个 Key 没有该模型的权限）'
+      : res.status === 429 ? '（请求太频繁，稍后再试）'
+      : res.status === 404 ? '（接口地址或模型名不对）' : '';
+    throw new AIError(`接口返回 ${res.status} ${hint} ${detail}`, 'http');
+  }
+
+  const text = await readAnswer(res, onDelta);
+  return { text };
+}
+
+/**
+ * 流式对话（自动兼容「地址要不要带 /v1」以及「网关不支持流式」两种情况）
+ */
+export async function streamChat(o) {
+  const cfg = getConfig();
+  if (!cfg.apiKey.trim()) throw new AIError('还没有填写 API Key，去「设置 → AI 引擎」填一个。', 'nokey');
+
+  const body = {
+    model: cfg.model || DEFAULTS.model,
+    messages: o.messages,
+    stream: true,
+    temperature: o.temperature ?? 0.3,
+    max_tokens: o.maxTokens ?? 900,
+  };
+
+  const key = cacheKeyOf(cfg);
+  const all = candidateUrls(cfg.baseUrl);
+  const cached = resolved.get(key);
+  // 先把上次成功的地址试一遍，再试其它候选
+  const urls = cached && all.includes(cached)
+    ? [cached, ...all.filter(u => u !== cached)]
+    : all;
+
+  let sawHtml = false;
+  let emptyAt = '';
+  for (const url of urls) {
+    const r = await tryOnce(url, cfg, body, o.signal, o.onDelta);
+    if (r.html) { sawHtml = true; continue; }          // 换下一个候选地址
+    if (r.text) { resolved.set(key, url); return r.text; }
+    emptyAt = url;
+  }
+
+  if (sawHtml) {
+    throw new AIError(
+      '这个接口地址返回的是网页，不是 API。多数第三方网关需要在地址后面加 /v1，' +
+      '比如 https://你的域名/v1 —— 改一下「接口地址」再试。', 'badendpoint');
+  }
+  if (emptyAt) {
+    throw new AIError(
+      `接口返回了 200 但没有正文内容（${emptyAt}）。可能是模型名不对，` +
+      '或者这个网关不支持流式输出；换个模型名试试。', 'empty');
+  }
+  throw new AIError('接口没有返回任何内容，请重试。', 'empty');
 }
 
 /* ──────────────────────────  缓存  ────────────────────────── */
@@ -245,5 +333,8 @@ export async function test() {
     maxTokens: 16,
     temperature: 0,
   });
-  return out.trim();
+  return String(out || '').trim();
 }
+
+/** 清掉「哪个地址是通的」记忆（改了设置后调用） */
+export function resetResolved() { resolved.clear(); }

@@ -21,7 +21,9 @@ Most people learn vocabulary by memorizing isolated words. Yet research shows th
 
 Consider the word "resilient". A dictionary tells you it means "able to recover quickly". But when you meet it in a story about a city rebuilding after a flood, the word acquires weight and colour that no definition can supply.
 
-This is why reading widely matters. Every sentence you finish quietly rewires the way you remember language. Learners who read a little every day consistently outperform those who cram once a week.`;
+This is why reading widely matters. Every sentence you finish quietly rewires the way you remember language. Learners who read a little every day consistently outperform those who cram once a week.
+
+The effect compounds. A page a day is roughly three hundred and sixty five pages a year, which is several novels, and the words you meet there arrive already attached to a situation, a voice and a feeling. That attachment is what makes them stick.`;
 
 const DEMO_AI = `【本句释义】adj. 有韧性的；能迅速恢复的（这里形容城市灾后恢复能力强）
 【为什么】后半句 a city rebuilding after a flood 给出了「遭受重创后重新站起来」的语境线索，与 resilient 的核心义「弹回原状」吻合。
@@ -87,7 +89,8 @@ await tx('aica', s => s.put({ k: 'ai:' + ai.cacheKeyFor('w', ['resilient', sent]
 
 localStorage.setItem('lexiread.ai', JSON.stringify({ baseUrl: 'https://api.deepseek.com', apiKey: 'sk-demo', model: 'deepseek-chat' }));
 localStorage.setItem('lexiread.settings', JSON.stringify({
-  fontSize: 20, lineHeight: 190, width: 720, font: 'serif', theme: 'light', autoAI: true, ttsRate: 95, ttsVoice: '',
+  fontSize: 20, lineHeight: 195, width: 680, font: 'serif', theme: 'light', autoAI: true,
+  ttsRate: 95, ttsVoice: '', paraStyle: 'book', justify: true,
 }));
 
 document.getElementById('out').textContent = 'seeded ' + VOCAB.length + ' words, article ' + parsed.words + ' words';

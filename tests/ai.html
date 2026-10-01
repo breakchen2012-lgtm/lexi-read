@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>LexiRead AI 客户端测试</title>
+<script>
+  window.__errs = [];
+  window.__posted = false;
+  addEventListener('error', e => window.__errs.push('error: ' + (e.message || e.error)));
+  addEventListener('unhandledrejection', e => window.__errs.push('reject: ' + ((e.reason && e.reason.message) || e.reason)));
+  setTimeout(() => {
+    if (window.__posted) return;
+    fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results: window.__partial || [], errors: window.__errs.concat(['watchdog']) }) }).catch(() => {});
+  }, 60000);
+</script>
+<style>body{font:15px/1.75 ui-monospace,monospace;margin:0;padding:12px}
+.pass{color:#0a0}.fail{color:#c00;font-weight:700}</style>
+</head>
+<body>
+<div id="out">running…</div>
+<script type="module">
+const results = [];
+window.__partial = results;
+const rec = (ok, name, info = '') => results.push([!!ok, name, info]);
+
+const ai = await import('../src/ai.js');
+const B = location.origin + '/__gw';
+
+function setCfg(baseUrl, model = 'mock-model', apiKey = 'sk-test') {
+  localStorage.setItem('lexiread.ai', JSON.stringify({ baseUrl, apiKey, model }));
+  ai.resetResolved();
+}
+const ask = () => ai.streamChat({
+  messages: [{ role: 'user', content: '你好' }], maxTokens: 32, temperature: 0,
+});
+
+/* ── 地址候选 ── */
+try {
+  const a = ai.candidateUrls('https://api.deepseek.com');
+  const b = ai.candidateUrls('https://api.openai.com/v1');
+  const c = ai.candidateUrls('https://x.com/v1/chat/completions');
+  const d = ai.candidateUrls('https://x.com/');
+  const ok = a.length === 2 && a[1] === 'https://api.deepseek.com/v1/chat/completions'
+    && b.length === 1 && b[0] === 'https://api.openai.com/v1/chat/completions'
+    && c.length === 1 && d[0] === 'https://x.com/chat/completions';
+  rec(ok, '地址候选：自动补 /chat/completions 与 /v1', JSON.stringify({ a, b, c, d }));
+} catch (e) { rec(false, '地址候选：自动补 /chat/completions 与 /v1', e.message); }
+
+/* ── 网关1：少了 /v1 时返回 HTML ── */
+try {
+  setCfg(B + '1');
+  const t = await ask();
+  rec(t === '网关一正常工作', '地址少 /v1（返回 HTML 200）时自动改用 /v1 并成功', JSON.stringify(t));
+} catch (e) { rec(false, '地址少 /v1（返回 HTML 200）时自动改用 /v1 并成功', e.message); }
+
+/* ── 网关1：记住成功地址，不再重复试探 ── */
+try {
+  const first = ai.candidateUrls(B + '1');
+  await ask();
+  const t = await ask();                     // 第二次应该直接用缓存地址
+  rec(t === '网关一正常工作', '第二次请求复用已探测成功的地址', JSON.stringify(t));
+} catch (e) { rec(false, '第二次请求复用已探测成功的地址', e.message); }
+
+/* ── 网关2：忽略 stream，返回整段 JSON ── */
+try {
+  setCfg(B + '2');
+  let delta = '';
+  const t = await ai.streamChat({
+    messages: [{ role: 'user', content: '你好' }], maxTokens: 32,
+    onDelta: d => { delta += d; },
+  });
+  rec(t === '网关二正常' && delta.includes('网关二正常'),
+    '网关不支持流式（返回整段 JSON）时也能解析', JSON.stringify({ t, delta }));
+} catch (e) { rec(false, '网关不支持流式（返回整段 JSON）时也能解析', e.message); }
+
+/* ── 网关5：SSE 但 content-type 是 text/plain ── */
+try {
+  setCfg(B + '5');
+  const t = await ask();
+  rec(t === '网关五正常', 'Content-Type 不是 event-stream 也能解析 SSE', JSON.stringify(t));
+} catch (e) { rec(false, 'Content-Type 不是 event-stream 也能解析 SSE', e.message); }
+
+/* ── 网关3：401 要给出明确原因 ── */
+try {
+  setCfg(B + '3');
+  await ask();
+  rec(false, '401 时提示 API Key 不正确', '居然通过了');
+} catch (e) {
+  rec(/API Key 不正确/.test(e.message) && /401/.test(e.message), '401 时提示 API Key 不正确', e.message.slice(0, 70));
+}
+
+/* ── 网关4：200 但没正文 ── */
+try {
+  setCfg(B + '4');
+  await ask();
+  rec(false, '200 但无正文时给出可排查的提示', '居然通过了');
+} catch (e) {
+  rec(/没有正文内容|模型名/.test(e.message), '200 但无正文时给出可排查的提示', e.message.slice(0, 80));
+}
+
+/* ── 完全不是 API 的地址 ── */
+try {
+  setCfg(B + '6');                     // 两个候选都返回网页
+  await ask();
+  rec(false, '地址完全是网页时提示要加 /v1', '居然通过了');
+} catch (e) {
+  rec(/返回的是网页|加 \/v1|\/v1/.test(e.message), '地址完全是网页时提示要加 /v1', e.message.slice(0, 80));
+}
+
+/* ── 没填 Key ── */
+try {
+  localStorage.setItem('lexiread.ai', JSON.stringify({ baseUrl: B + '1', apiKey: '', model: 'x' }));
+  await ask();
+  rec(false, '没填 Key 时提示去设置', '居然通过了');
+} catch (e) {
+  rec(/API Key/.test(e.message), '没填 Key 时提示去设置', e.message.slice(0, 60));
+}
+
+/* ── 提示词本身 ── */
+try {
+  const w = ai.wordPrompt({ word: 'resilient', sentence: 'She stayed resilient.', before: 'A.', after: 'B.' });
+  const g = ai.grammarPrompt({ sentence: 'What matters is how you respond.' });
+  const s = ai.sentencePrompt({ sentence: 'Hello there.' });
+  const ok = /精读老师/.test(w[0].content) && /resilient/.test(w[1].content)
+    && /She stayed resilient/.test(w[1].content) && /A\./.test(w[1].content)
+    && /主干/.test(g[1].content) && /翻译/.test(s[1].content);
+  rec(ok, '三种提示词都带上了目标词 / 原句 / 前后文');
+} catch (e) { rec(false, '三种提示词都带上了目标词 / 原句 / 前后文', e.message); }
+
+/* ── 缓存键：同词同句要一致，不同句要不同 ── */
+try {
+  const k1 = ai.cacheKeyFor('w', ['resilient', 'She stayed resilient.']);
+  const k2 = ai.cacheKeyFor('w', ['resilient', 'She stayed resilient.']);
+  const k3 = ai.cacheKeyFor('w', ['resilient', 'Another sentence.']);
+  rec(k1 === k2 && k1 !== k3, '缓存键稳定且能区分不同句子');
+} catch (e) { rec(false, '缓存键稳定且能区分不同句子', e.message); }
+
+const pass = results.filter(r => r[0]).length;
+document.getElementById('out').innerHTML = `<h3>${pass}/${results.length} 通过</h3>` +
+  results.map(([ok, n, i]) => `<div class="${ok ? 'pass' : 'fail'}">${ok ? '✓' : '✗'} ${n}${i ? ' <span style="color:#888">→ ' + String(i).replace(/</g, '&lt;') + '</span>' : ''}</div>`).join('');
+window.__posted = true;
+try {
+  await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ results, errors: window.__errs || [] }) });
+} catch {}
+</script>
+</body>
+</html>

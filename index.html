@@ -60,7 +60,7 @@
         <button class="tool" data-action="reader-settings">Aa 排版</button>
       </div>
     </div>
-    <article id="reader-body" class="reader-body"></article>
+    <article id="reader-body" class="reader-body" lang="en"></article>
     <div id="reader-end" class="reader-end"></div>
   </section>
 
@@ -114,6 +114,11 @@
       <label class="field"><span>接口地址</span>
         <input id="set-baseurl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://api.deepseek.com">
       </label>
+      <p class="hint" style="margin:-2px 0 12px">常用地址：
+        DeepSeek 官方 <code>https://api.deepseek.com</code> ·
+        OpenAI <code>https://api.openai.com/v1</code> ·
+        第三方网关（New API / One API）一般要填到 <code>/v1</code> 为止，例如 <code>https://你的域名/v1</code>。
+        填错了应用会自动再试一次加 <code>/v1</code> 的地址。</p>
       <label class="field"><span>API Key</span>
         <input id="set-apikey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
       </label>
@@ -146,6 +151,15 @@
           <option value="sepia">纸黄</option>
           <option value="dark">暗色</option>
         </select>
+      </label>
+      <label class="field"><span>段落</span>
+        <select id="set-para">
+          <option value="book">书籍（首行缩进，段间紧凑）</option>
+          <option value="web">网页（段间空行，不缩进）</option>
+        </select>
+      </label>
+      <label class="field"><span>两端对齐</span>
+        <input id="set-justify" type="checkbox">
       </label>
       <label class="field"><span>点词后自动请求 AI 讲解</span>
         <input id="set-autoai" type="checkbox">

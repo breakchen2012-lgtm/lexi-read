@@ -17,8 +17,10 @@ import {
 
 const SET_KEY = 'lexiread.settings';
 const DEFAULT_SETTINGS = {
-  fontSize: 20, lineHeight: 190, width: 720, font: 'serif',
+  fontSize: 20, lineHeight: 195, width: 680, font: 'serif',
   theme: 'auto', autoAI: true, ttsRate: 95, ttsVoice: '',
+  paraStyle: 'book',      // 书籍：首行缩进、段间紧凑
+  justify: true,          // 两端对齐 + 自动断词
 };
 let settings = (() => {
   try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SET_KEY) || '{}') }; }
@@ -41,6 +43,8 @@ function applySettings() {
   let t = settings.theme;
   if (t === 'auto') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   document.documentElement.dataset.theme = t;
+  document.documentElement.dataset.para = settings.paraStyle === 'web' ? 'web' : 'book';
+  document.documentElement.dataset.justify = settings.justify ? '1' : '0';
   tts.configure({ rate: settings.ttsRate / 100, voiceURI: settings.ttsVoice });
 }
 
@@ -857,6 +861,8 @@ function renderSettings() {
   $('#set-width-v').textContent = settings.width + 'px';
   $('#set-font').value = settings.font;
   $('#set-theme').value = settings.theme;
+  $('#set-para').value = settings.paraStyle || 'book';
+  $('#set-justify').checked = settings.justify !== false;
   $('#set-autoai').checked = !!settings.autoAI;
   $('#set-rate').value = settings.ttsRate;
   $('#set-rate-v').textContent = (settings.ttsRate / 100).toFixed(2) + '×';
@@ -1175,6 +1181,7 @@ const ACTIONS = {
       apiKey: $('#set-apikey').value.trim(),
       model: $('#set-model').value.trim() || 'deepseek-chat',
     });
+    ai.resetResolved();
     toast('已保存');
   },
   'test-ai': async () => {
@@ -1184,6 +1191,7 @@ const ACTIONS = {
       apiKey: $('#set-apikey').value.trim(),
       model: $('#set-model').value.trim() || 'deepseek-chat',
     });
+    ai.resetResolved();
     out.hidden = false;
     out.innerHTML = '<div class="loading"><span class="spinner"></span>正在连接…</div>';
     try {
@@ -1355,6 +1363,8 @@ function wire() {
   bindRange('#set-rate', 'ttsRate', v => (v / 100).toFixed(2) + '×');
   $('#set-font').addEventListener('change', e => { settings.font = e.target.value; saveSettings(); });
   $('#set-theme').addEventListener('change', e => { settings.theme = e.target.value; saveSettings(); });
+  $('#set-para').addEventListener('change', e => { settings.paraStyle = e.target.value; saveSettings(); });
+  $('#set-justify').addEventListener('change', e => { settings.justify = e.target.checked; saveSettings(); });
   $('#set-autoai').addEventListener('change', e => { settings.autoAI = e.target.checked; saveSettings(); });
   $('#sync-body').addEventListener('change', e => {
     if (e.target.id === 'sy-auto') {
