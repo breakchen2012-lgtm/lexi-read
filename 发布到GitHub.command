@@ -103,9 +103,27 @@ if ! git diff --cached --quiet 2>/dev/null; then
   git -c user.name="$USER" -c user.email="$USER@users.noreply.github.com" \
       commit -q -m "更新" >/dev/null || true
 fi
+BASE="${LEXI_REMOTE_BASE:-https://github.com}"
 git remote remove origin >/dev/null 2>&1 || true
-git remote add origin "${LEXI_REMOTE_BASE:-https://github.com}/$USER/$REPO.git"
-git push -u origin main --force >/dev/null 2>&1 || git push -u origin master --force || die "推送失败"
+git remote add origin "$BASE/$USER/$REPO.git"
+
+# 仓库里有 2.9 MB 词典 + 1.8 MB pdf.js，默认 1 MB 的 postBuffer 会 HTTP 400
+git config http.postBuffer 524288000
+git config http.version HTTP/1.1
+
+BRANCH="$(git branch --show-current 2>/dev/null || echo main)"
+[ -n "$BRANCH" ] || BRANCH=main
+
+# 先走 gh 的凭据助手；万一没配好就用令牌直推（且不把令牌写进 .git/config）
+if git push origin "$BRANCH" --force >/dev/null 2>&1; then
+  git branch --set-upstream-to="origin/$BRANCH" "$BRANCH" >/dev/null 2>&1 || true
+else
+  TOKEN="$("$GH" auth token 2>/dev/null)"
+  [ -n "$TOKEN" ] || die "拿不到访问令牌，请重新运行"
+  git push "${BASE/https:\/\//https://x-access-token:$TOKEN@}/$USER/$REPO.git" "$BRANCH" --force >/dev/null 2>&1 \
+    || die "推送失败（网络问题？稍后重试）"
+  git branch --set-upstream-to="origin/$BRANCH" "$BRANCH" >/dev/null 2>&1 || true
+fi
 ok "代码已推送"
 
 # ── 6. 打开 GitHub Pages ─────────────────────────────────────
