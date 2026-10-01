@@ -424,6 +424,13 @@ body.focus-mode #topbar, body.focus-mode #tabbar{ transition: opacity .3s; }
   font-family: var(--ff-mono); font-size: 11.5px; line-height: 1.6; white-space: pre;
   color: var(--fg-dim); -webkit-overflow-scrolling: touch; user-select: text; }
 
+/* 欢迎页的折叠帮助 */
+.wc-help{ margin-top: 14px; font-size: 13px; color: var(--fg-dim); line-height: 1.7; }
+.wc-help summary{ cursor: pointer; color: var(--accent); font-weight: 600; }
+.wc-help > div{ margin-top: 9px; padding: 11px 13px; background: var(--bg-sunk);
+  border-radius: var(--radius-sm); white-space: pre-wrap; }
+.wc-help b{ color: var(--fg); }
+
 /* ── 账号与同步 ── */
 .sync-btn{ font-size:18px; }
 .sync-btn.on{ color: var(--accent); }

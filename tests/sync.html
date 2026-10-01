@@ -278,10 +278,14 @@ try {
 
 /* ── 21. 配置自检（testConfig）的各个分支 ── */
 try {
-  await evalAsync(B, `localStorage.setItem('lexiread.sync', JSON.stringify({url:'',anonKey:''})); return 1;`);
+  // 要验证「未配置」分支，必须同时清掉 localStorage 和 config.js 里的内置配置
+  await evalAsync(B, `window.__savedCfg = window.LEXIREAD_CONFIG;
+    window.LEXIREAD_CONFIG = {};
+    localStorage.removeItem('lexiread.sync'); return 1;`);
   await evalAsync(B, `try { await __lexisync.testConfig(); return 'NO-THROW'; } catch(e){ return e.message; }`)
     .then(m => rec(/还没有填写/.test(m), '自检：没填配置时提示去填', m))
     .catch(e => rec(false, '自检：没填配置时提示去填', e.message));
+  await evalAsync(B, `window.LEXIREAD_CONFIG = window.__savedCfg; return 1;`);
 } catch (e) { rec(false, '自检：没填配置时提示去填', e.message); }
 
 try {
@@ -306,6 +310,20 @@ try {
   const o = JSON.parse(m);
   rec(o.tables === true && /publishable/.test(o.keyKind), '自检：新版 sb_publishable_ 密钥被正确识别', m);
 } catch (e) { rec(false, '自检：新版 sb_publishable_ 密钥被正确识别', e.message); }
+
+/* ── 22. 注册常见报错要翻译成人话并给出办法 ── */
+try {
+  const m = await evalAsync(B, `try { await __lexisync.signUp('ratelimit@test.dev','secret123'); return 'NO-THROW'; }
+    catch(e){ return e.message; }`);
+  rec(/邮件发送太频繁|Confirm email/.test(m), '限流报错翻译成中文并给出解决办法', String(m).slice(0, 50));
+} catch (e) { rec(false, '限流报错翻译成中文并给出解决办法', e.message); }
+
+try {
+  const m = await evalAsync(B, `localStorage.setItem('lexiread.sync', JSON.stringify({url:'${SB}', anonKey:'test-anon-key', autoSync:false}));
+    try { await __lexisync.signIn('unconfirmed@test.dev','secret123'); return 'NO-THROW'; }
+    catch(e){ return e.message; }`);
+  rec(/邮箱还没验证|Confirm email/.test(m), '「邮箱未验证」也给出可操作的步骤', String(m).slice(0, 50));
+} catch (e) { rec(false, '「邮箱未验证」也给出可操作的步骤', e.message); }
 
 const pass = results.filter(r => r[0]).length;
 document.getElementById('out').innerHTML = `<h3>${pass}/${results.length} 通过</h3>` +

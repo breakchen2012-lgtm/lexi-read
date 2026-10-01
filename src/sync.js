@@ -115,11 +115,29 @@ async function readJson(res) {
 
 function explain(status, body) {
   const msg = body.error_description || body.msg || body.message || body.error || body.hint || '';
+
+  // 邮箱未验证：不同的 GoTrue 版本会返回 400 或 401，先统一拦下来
+  if (/email not confirmed|email_not_confirmed/i.test(msg)) {
+    return '邮箱还没验证。去收件箱（含垃圾邮件）点确认链接；\n'
+      + '或者去 Supabase，在 Authentication → Sign In / Providers → Email 里关掉「Confirm email」，'
+      + '再到 Authentication → Users 删掉这个用户，回应用重新注册一次即可。';
+  }
+
+  // 免费版内置邮件的发送频率限制：注册要发验证邮件时很容易撞上
+  if (/rate limit|too many requests|over_email_send_rate_limit/i.test(msg) || status === 429) {
+    return status === 429 || /email/i.test(msg)
+      ? '邮件发送太频繁了。Supabase 免费版内置邮件每小时只能发几封。\n'
+        + '最省事的解决办法：去 Supabase 左侧 Authentication → Sign In / Providers → Email，'
+        + '把「Confirm email」关掉。关掉后注册不发邮件、立即生效，也不再受这个限制。'
+      : '请求太频繁，请稍等一会儿再试。';
+  }
+  if (/User already registered|already been registered/i.test(msg)) {
+    return '这个邮箱已经注册过了。如果当时没收到验证邮件，先按上面说的关掉「Confirm email」，然后直接点「登录」。';
+  }
   if (status === 400 && /already registered|already exists/i.test(msg)) return '这个邮箱已经注册过了，直接登录吧';
   if (status === 400 && /password/i.test(msg)) return '密码太短了，至少要 6 位';
   if (status === 400 && /invalid login|invalid_grant/i.test(msg)) return '邮箱或密码不对';
   if (status === 401 || status === 403) {
-    if (/email not confirmed/i.test(msg)) return '邮箱还没验证，去收件箱点一下确认链接（或在 Supabase 里关掉邮箱验证）';
     return '登录已过期，请重新登录（' + (msg || status) + '）';
   }
   if (status === 404) return '接口地址不对，检查一下 Supabase 项目地址（要 https://xxx.supabase.co）';

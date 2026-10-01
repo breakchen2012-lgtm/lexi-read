@@ -156,8 +156,11 @@ https://<你的用户名>.github.io/lexi-read/
 
 5. 打开应用 → **设置 → 账号与同步** → 用邮箱注册 / 登录。三部设备登同一个账号即可。
 
-> **小提示**：Supabase 默认要求验证邮箱。想省事可以在
-> **Authentication → Sign In / Providers → Email** 里关掉 **Confirm email**，注册后立即能用。
+> **重要提示**：Supabase 默认要求验证邮箱，而免费版**内置邮件每小时只能发几封**
+> （撞上会报 `email rate limit exceeded`）。私人自用建议直接关掉：
+> **Authentication → Sign In / Providers → Email → 把 Confirm email 关掉**。
+> 关掉后注册不发邮件、立即生效，也不再受这个限制。
+> 如果之前已经建过一个「未验证」的用户，到 **Authentication → Users** 删掉它再重新注册即可。
 
 ### 同步哪些东西、怎么处理冲突
 

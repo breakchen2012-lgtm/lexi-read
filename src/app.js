@@ -1033,12 +1033,26 @@ function renderWelcome(errMsg) {
              placeholder="you@example.com" value="${esc(cfg.email)}"></div>
     <div class="sync-field"><span>密码（至少 6 位）</span>
       <input id="sy-pass" type="password" autocomplete="current-password" placeholder="••••••"></div>
-    ${errMsg ? `<div class="err-box" style="margin-bottom:12px">${esc(errMsg)}</div>` : ''}
+    ${errMsg ? `<div class="err-box" style="margin-bottom:12px;white-space:pre-wrap">${esc(errMsg)}</div>` : ''}
     <div class="wc-row">
       <button class="btn primary" data-action="sync-signup">注册新账号</button>
       <button class="btn" data-action="sync-signin">登录</button>
     </div>
-    <p class="wc-note">同步服务是你自己的 Supabase 免费项目，数据只有你能读写。Key 和密码不会上传到任何第三方服务器。</p>`;
+    <p class="wc-note">同步服务是你自己的 Supabase 免费项目，数据只有你能读写。Key 和密码不会上传到任何第三方服务器。</p>
+    <details class="wc-help">
+      <summary>注册遇到问题？</summary>
+      <div>
+        <b>提示“email rate limit exceeded”</b><br>
+        免费版内置邮件每小时只能发几封。去 Supabase 左侧
+        <b>Authentication → Sign In / Providers → Email</b>，把 <b>Confirm email</b> 关掉，
+        然后回来直接点「登录」即可，注册不再需要邮件。<br><br>
+        <b>提示“这个邮箱已经注册过了”</b><br>
+        直接点「登录」。如果密码忘了，Supabase 里
+        <b>Authentication → Users</b> 可以删除那个用户，再重新注册。<br><br>
+        <b>提示“邮箱还没验证”</b><br>
+        去收件箱（含垃圾邮件）点确认链接；或者同样关掉 Confirm email。
+      </div>
+    </details>`;
 }
 
 function goWelcome() {

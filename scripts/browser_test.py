@@ -174,6 +174,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             route = inner[len('/auth/v1/'):]
             if route == 'signup':
                 email = (body.get('email') or '').strip().lower()
+                if email.startswith('ratelimit'):
+                    return self._send(429, {'code': 429, 'error_code': 'over_email_send_rate_limit',
+                                            'msg': 'email rate limit exceeded'}) or True
+                if email.startswith('unconfirmed'):
+                    return self._send(400, {'msg': 'Email not confirmed'}) or True
                 if not email or len(body.get('password') or '') < 6:
                     return self._send(400, {'msg': 'Password should be at least 6 characters'}) or True
                 if any(u['email'] == email for u in SB['users'].values()):
@@ -186,6 +191,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if route.startswith('token'):
                 grant = (qs.get('grant_type') or [''])[0]
                 if grant == 'password':
+                    if (body.get('email') or '').strip().lower().startswith('unconfirmed'):
+                        return self._send(400, {'msg': 'Email not confirmed'}) or True
                     for uid, u in SB['users'].items():
                         if u['email'] == (body.get('email') or '').strip().lower():
                             if u['password'] != body.get('password'):
