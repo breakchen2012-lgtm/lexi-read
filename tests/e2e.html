@@ -375,19 +375,19 @@ try {
   const keys = await W().caches.keys();
   let shell = {};
   try {
-    const c = await W().caches.open('lexiread-v24');
+    const c = await W().caches.open('lexiread-v29');
     for (const u of ['./index.html', './src/app.js', './styles.css', './icons/icon-192.png']) {
       shell[u] = !!(await c.match(u));
     }
   } catch (e) { shell = { err: e.message }; }
-  const ok = ctrl && keys.includes('lexiread-v24') && Object.values(shell).every(Boolean);
+  const ok = ctrl && keys.includes('lexiread-v29') && Object.values(shell).every(Boolean);
   rec(ok, 'Service Worker 接管并缓存应用外壳（离线可用）',
     JSON.stringify({ ctrl, keys, shell }).slice(0, 160));
 } catch (e) { rec(false, 'Service Worker 接管并缓存应用外壳（离线可用）', e.message); }
 
 /* 22 ── 词典已缓存，可离线查词 */
 try {
-  const c = await W().caches.open('lexiread-v24');
+  const c = await W().caches.open('lexiread-v29');
   const hit = await c.match(new URL('./data/dict.json', W().location.href).href);
   const size = hit ? (await hit.clone().text()).length : 0;
   rec(!!hit && size > 1000000, '离线词典已进入缓存', JSON.stringify({ size }));
@@ -582,9 +582,8 @@ try {
 /* 33 ── 页脚显示页码 + 按字数的百分比 */
 try {
   const txt = (D().querySelector('#reader-page') || {}).textContent || '';
-  const hasPct = /\d+\s*\/\s*\d+\s*·\s*\d+%/.test(txt);
-  const atEnd = txt.trim().startsWith('1 /') ? txt.includes('0%') : true;
-  rec(hasPct, '页脚同时显示页码和阅读百分比', txt);
+  const hasPct = /\d+\s*\/\s*\d+\s*·\s*\d+\.\d{2}%/.test(txt);
+  rec(hasPct, '页脚显示页码 + 两位小数的阅读百分比', txt);
 } catch (e) { rec(false, '页脚同时显示页码和阅读百分比', e.message); }
 
 /* 34 ── 面板是浮层，不能挤压正文（否则两栏会被挤出屏幕） */
@@ -712,6 +711,116 @@ try {
     JSON.stringify({ 标题: title, 原词: base, 注释: gloss, 语境里有中文: /[\u4e00-\u9fa5]/.test(ctx) }));
   D().querySelector('#ph-close').click();
 } catch (e) { rec(false, '点带注释的词，面板标题只显示单词本身、不粘中文', e.message); }
+
+/* 40 ── 生词本里的词用另一种颜色标注 */
+try {
+  if (!D().querySelector('#panel').hidden) { D().querySelector('#ph-close').click(); await wait(300); }
+  if (!D().querySelector('#reader-body ruby.w')) {
+    D().querySelector('[data-action="toggle-annotate"]').click();
+    await waitFor(() => D().querySelector('#reader-body ruby.w'), 15000, '注释出现');
+  }
+  // 找一个「系统标的」词，收藏它，看是否变成「我的词」颜色
+  const sys = D().querySelector('#reader-body ruby.w:not(.anno-mine)');
+  if (!sys) throw new Error('没有系统标注的词');
+  const w = sys.dataset.w;
+  sys.click();
+  await waitFor(() => !D().querySelector('#panel').hidden, 6000, '面板');
+  D().querySelector('[data-action="save"]').click();
+  await waitFor(() => D().querySelector('#panel-foot [data-action="unsave"]'), 6000, '已收藏');
+  await wait(1200);      // 收藏后如果注释开着会重绘，等它稳定
+  const el2 = D().querySelector('#reader-body ruby.w.anno-mine');
+  const mine = D().querySelectorAll('#reader-body ruby.w.anno-mine').length;
+  const color = el2 ? getComputedStyle(el2.querySelector('rt')).color : '';
+  const sysColor = (() => {
+    const e = D().querySelector('#reader-body ruby.w:not(.anno-mine) rt');
+    return e ? getComputedStyle(e).color : '';
+  })();
+  if (!D().querySelector('#panel').hidden) D().querySelector('#ph-close').click();
+  rec(mine > 0 && color && color !== sysColor,
+    '收藏后该词改成「我的词」配色（和系统标的区分开）',
+    JSON.stringify({ 收藏的词: w, 我的词数: mine, 我的颜色: color, 系统颜色: sysColor }));
+} catch (e) { rec(false, '收藏后该词改成「我的词」配色（和系统标的区分开）', e.message); }
+
+/* 41 ── 注释上点一下就能听读音 + 看音标 */
+try {
+  const ruby = D().querySelector('#reader-body ruby.w');
+  if (!ruby) throw new Error('没有带注释的词');
+  const rt = ruby.querySelector('rt');
+  const hasSpk = /\ud83d\udd0a/.test(rt.textContent);
+  let spoke = 0;
+  const orig = W().speechSynthesis.speak;
+  W().speechSynthesis.speak = function () { spoke++; return orig.apply(this, arguments); };
+  rt.click();
+  await wait(400);
+  const toastTxt = (D().querySelector('#toast') || {}).textContent || '';
+  W().speechSynthesis.speak = orig;
+  rec(hasSpk && spoke > 0,
+    '点注释上的小喇叭就能听读音（并弹出音标）',
+    JSON.stringify({ 有喇叭: hasSpk, 朗读次数: spoke, 提示: toastTxt.slice(0, 30) }));
+} catch (e) { rec(false, '点注释上的小喇叭就能听读音（并弹出音标）', e.message); }
+
+/* 42 ── 整句面板：自动翻译 + 备注 + 可收起 */
+try {
+  if (!D().querySelector('#panel').hidden) { D().querySelector('#ph-close').click(); await wait(300); }
+  D().querySelector('#reader-body .sent').click();
+  await waitFor(() => !D().querySelector('#panel').hidden, 6000, '整句面板');
+  const hasNote = !!D().querySelector('#sent-note');
+  const hasAI = !!D().querySelector('#ai-tr');
+  // 收起「翻译」分组
+  const label = [...D().querySelectorAll('#panel-body .def-label')].find(l => /翻译/.test(l.textContent));
+  label.click();
+  await wait(300);
+  const collapsed = label.closest('.def-block').classList.contains('collapsed');
+  label.click();
+  await wait(200);
+  // 备注能存下
+  const box = D().querySelector('#sent-note');
+  box.value = '这是我记的备注';
+  box.dispatchEvent(new (W().Event)('input', { bubbles: true }));
+  await wait(1200);
+  const stored = await new Promise(res => {
+    const rq = W().indexedDB.open('lexiread');
+    rq.onsuccess = () => {
+      const tx = rq.result.transaction('aica', 'readonly');
+      const all = tx.objectStore('aica').getAll();
+      all.onsuccess = () => res((all.result || []).filter(r => String(r.k).startsWith('note:')).length);
+      all.onerror = () => res(-1);
+    };
+    rq.onerror = () => res(-1);
+  });
+  rec(hasNote && hasAI && collapsed && stored > 0,
+    '整句面板：自动翻译 + 备注可写 + 分组可收起',
+    JSON.stringify({ 有翻译区: hasAI, 有备注框: hasNote, 可收起: collapsed, 已存备注: stored }));
+} catch (e) { rec(false, '整句面板：自动翻译 + 备注可写 + 分组可收起', e.message); }
+
+/* 43 ── 快捷键 A / Esc */
+try {
+  if (!D().querySelector('#panel').hidden) { D().querySelector('#ph-close').click(); await wait(300); }
+  const el = D().querySelector('#reader-body .w');
+  el.click();
+  await waitFor(() => !D().querySelector('#panel').hidden, 6000, '面板');
+  const wasSaved = !!D().querySelector('#panel-foot [data-action="unsave"]');
+  D().dispatchEvent(new (W().KeyboardEvent)('keydown', { key: 'a', bubbles: true }));
+  await wait(700);
+  const nowSaved = !!D().querySelector('#panel-foot [data-action="unsave"]');
+  D().dispatchEvent(new (W().KeyboardEvent)('keydown', { key: 'Escape', bubbles: true }));
+  await wait(500);
+  const closed = D().querySelector('#panel').hidden;
+  rec(wasSaved !== nowSaved && closed,
+    '快捷键 A 加入/移出生词本、Esc 关闭面板',
+    JSON.stringify({ 按A前已收藏: wasSaved, 按A后已收藏: nowSaved, Esc后面板关闭: closed }));
+} catch (e) { rec(false, '快捷键 A 加入/移出生词本、Esc 关闭面板', e.message); }
+
+/* 44 ── 界面上能看到版本号 */
+try {
+  const hint = (D().querySelector('#version-hint') || {}).textContent || '';
+  D().querySelector('#btn-settings').click();
+  await waitFor(() => D().querySelector('#version-hint'), 5000, '设置页');
+  await wait(300);
+  const v = (D().querySelector('#version-hint') || {}).textContent || '';
+  D().querySelector('#tabbar .tab[data-tab="library"]').click();
+  rec(/v\d+\.\d+\.\d+/.test(v), '界面上能看到版本号', v.slice(0, 60));
+} catch (e) { rec(false, '界面上能看到版本号', e.message); }
 
 /* 输出 */
 const pass = results.filter(r => r[0]).length;

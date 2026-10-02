@@ -273,8 +273,44 @@ body.focus-mode #topbar, body.focus-mode #tabbar{ transition: opacity .3s; }
   border-radius:999px; padding:7px 14px; font-size:13.5px; font-weight:550; }
 .seg-btn.is-on{ background: var(--bg-elev); color: var(--fg); box-shadow: 0 1px 4px rgba(0,0,0,.10); }
 
+/* ── 面板里可折叠的分组 + 备注框 ── */
+.def-label[data-action="toggle-coll"]{
+  cursor:pointer; user-select:none; display:flex; align-items:center; gap:6px;
+}
+.def-label[data-action="toggle-coll"]:hover{ color: var(--accent); }
+.def-label .caret{ font-size:10px; opacity:.55; transition: transform .18s; }
+.def-block.collapsed .def-label .caret{ transform: rotate(-90deg); }
+.def-block.collapsed .def-block-body{ display:none; }
+.note-box{
+  width:100%; box-sizing:border-box; resize:vertical; min-height:66px;
+  background: var(--bg-sunk); color: var(--fg); border:1px solid var(--line);
+  border-radius: var(--radius-sm); padding:9px 11px; font-size:13.5px;
+  line-height:1.75; font-family: var(--ff-serif);
+}
+.note-box:focus{ outline:none; border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+
+.kbd-list{ display:flex; flex-direction:column; gap:9px; font-size:13.5px; color: var(--fg-dim); }
+.kbd-list .kbd{ background: var(--accent-soft); color: var(--accent); margin:0 8px 0 0; padding:1px 7px; }
+
+/* 按钮上的快捷键提示 */
+.kbd{
+  display:inline-block; margin-left:5px; padding:0 5px; font-size:10.5px;
+  font-weight:600; border-radius:4px; background: color-mix(in srgb, currentColor 16%, transparent);
+  opacity:.8; font-family: var(--ff-sans);
+}
+
 /* ── 分级注释（ruby 行间注） ── */
 .reader-body ruby.w{ ruby-align: center; ruby-position: over; hyphens: none; }
+.reader-body ruby.w.anno-mine rt{
+  color: color-mix(in srgb, #e8a33d 88%, var(--fg));
+  background: color-mix(in srgb, #e8a33d 18%, transparent);
+}
+.reader-body ruby.w.anno-mine{ text-decoration-color: #e8a33d; }
+.tr-block .spk{
+  display:inline-block; cursor:pointer; margin-right:6px; font-size:12px;
+  opacity:.65; user-select:none; vertical-align:1px;
+}
+.tr-block .spk:hover{ opacity:1; }
 .reader-body ruby.w rt{
   font-family: var(--ff-sans); font-size: 9.5px; line-height: 1.15;
   color: color-mix(in srgb, var(--accent) 85%, var(--fg-dim));

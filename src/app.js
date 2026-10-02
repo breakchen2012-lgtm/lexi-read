@@ -15,6 +15,7 @@ import {
 
 /* ══════════════════════════  设置  ══════════════════════════ */
 
+const APP_VERSION = '2.0.0';           // 每次发布递增，界面上能看到
 const SET_KEY = 'lexiread.settings';
 const DEFAULT_SETTINGS = {
   fontSize: 20, lineHeight: 195, width: 680, font: 'serif',
@@ -304,9 +305,9 @@ function updatePageChrome() {
       }
       const before = (PG.blockWords && PG.blockWords[bi]) || 0;
       const total = S.cur.parsed.words || 1;
-      pct = Math.max(0, Math.min(100, Math.round(before / total * 100)));
+      pct = Math.max(0, Math.min(100, before / total * 100));
     }
-    pgEl.textContent = `${PG.page + 1} / ${PG.total} · ${pct}%`;
+    pgEl.textContent = `${PG.page + 1} / ${PG.total} · ${pct.toFixed(2)}%`;
   }
   $$('[data-action="page-prev"]').forEach(b => b.toggleAttribute('disabled', PG.page <= 0));
   $$('[data-action="page-next"]').forEach(b => b.toggleAttribute('disabled', PG.page >= PG.total - 1));
@@ -395,16 +396,18 @@ function tokenizeBlock(el, block) {
     sEl.dataset.sid = sent.sid;
     for (const t of tokensOf(sent)) {
       if (t.k === 'w') {
-        const anno = annoTextFor(t.w);
+        const anno = annoInfoFor(t.w);
         const wEl = document.createElement(anno ? 'ruby' : 'span');
         wEl.className = 'w' + (anno ? ' has-anno' : '')
+          + (anno && anno.mine ? ' anno-mine' : '')
           + ((S.vocab.has(t.w) || S.vocab.has(dict.resolveBase(t.w))) ? ' saved' : '');
         wEl.dataset.w = t.w;
         wEl.dataset.sid = sent.sid;
         wEl.textContent = t.v;
         if (anno) {
           const rt = document.createElement('rt');
-          rt.textContent = anno;
+          rt.textContent = anno.text + '\u00a0\ud83d\udd0a';   // 尾部小喇叭，点一下就读
+          if (anno.phonetic) wEl.dataset.ph = anno.phonetic;
           wEl.appendChild(rt);
         }
         sEl.appendChild(wEl);
@@ -566,32 +569,50 @@ function wordLevelOf(word) {
   return lv;
 }
 
-/** 取一个又短又常见的释义：跳过 [计] [化] 这类专业义项 */
-function shortGloss(rec) {
-  if (!rec || !rec.translation) return '';
-  const parts = String(rec.translation).split(/[；;\n]/).map(x => x.trim()).filter(Boolean);
-  for (const p of parts) {
-    if (/\[[^\]]{1,5}\]/.test(p)) continue;              // 带 [计] [医] 标记的多半是冷门义项
-    const clean = p.replace(/^[a-z]{1,6}\.\s*/i, '').replace(/\[[^\]]*\]/g, '').trim();
-    if (!clean) continue;
-    const first = clean.split(/[，,、]/)[0].trim();
-    if (!first) continue;
-    return first.length > 4 ? first.slice(0, 4) : first;
+/** 把一条释义拆成若干个候选义项，按「先出现的更常用」排序，
+ *  并丢掉带 [计] [法] 这类专业标记的冷门义项。 */
+function sensesOf(rec) {
+  if (!rec || !rec.translation) return [];
+  const out = [];
+  for (const chunk of String(rec.translation).split(/[；;\n]/)) {
+    if (!chunk.trim()) continue;
+    const soft = /\[[^\]]{1,5}\]/.test(chunk);           // 这一块带专业标记
+    for (let piece of chunk.split(/[，,、]/)) {
+      piece = piece.replace(/^[a-z]{1,6}\.\s*/i, '').replace(/\[[^\]]*\]/g, '')
+        .replace(/[.．…]+$/, '').replace(/\.{3,}/g, '').replace(/^[.．…]+/, '').trim();
+      if (!piece || piece.length > 14) continue;           // 太长的是解释句，不适合当注
+      if (/[.．…]{2,}/.test(piece)) continue;               // 「做得比…好」这种残缺义项，读着别扭
+      if (/[（(]/.test(piece) && piece.length > 6) continue;
+      out.push({ text: piece, soft });
+    }
   }
-  // 全都被过滤掉了就退回原文
-  const t = String(rec.translation).replace(/^[a-z]{1,5}\.\s*/i, '').replace(/\[[^\]]*\]/g, '');
-  const first = t.split(/[；;，,、]/)[0].trim();
-  return first.length > 4 ? first.slice(0, 4) : first;
+  // 非专业的排前面
+  out.sort((a, b) => (a.soft ? 1 : 0) - (b.soft ? 1 : 0));
+  return out.map(x => x.text);
+}
+
+/** 短释义：最多给两个义项，用「／」隔开，让读者能自己挑对的那个 */
+function shortGloss(rec, max = 2) {
+  const list = sensesOf(rec);
+  if (!list.length) return '';
+  const picked = [];
+  for (const t of list) {
+    if (picked.some(p => p === t || p.includes(t) || t.includes(p))) continue;
+    picked.push(t.length > 6 ? t.slice(0, 6) : t);
+    if (picked.length >= max) break;
+  }
+  return picked.join('／');
 }
 
 /* 人名、地名、机构名之类：标了也没用，还特别吵 */
 const PROPER_NOISE = /(姓氏|人名|男子名|女子名|男子名|地名|城市|国家|州名|河名|山名|岛名|公司|商标|缩写|略语|即|原名|同|见)/;
 
-/** 这个词要不要加注释；要的话返回 rt 里显示的文本 */
-function annoTextFor(word) {
-  if (!settings.annotate || settings.annotate === 'off') return '';
+/** 这个词要不要加注释。返回 { text, mine } 或 null。
+ *  mine=true 表示这个词在「我的生词本」里（用另一种颜色显示）。 */
+function annoInfoFor(word) {
+  if (!settings.annotate || settings.annotate === 'off') return null;
   const need = TAG_RANK[settings.annotate] || 0;
-  if (!need) return '';
+  if (!need) return null;
   // 词典还没加载完时必须直接返回，而且**不能写进缓存** ——
   // 否则空结果会被永久缓存，注释功能看起来「完全没反应」。
   if (!dict.ready()) {
@@ -601,29 +622,36 @@ function annoTextFor(word) {
         .then(() => { annoRetry = false; annoMemo.clear(); rerenderReader(); })
         .catch(() => { annoRetry = false; });
     }
-    return '';
+    return null;
   }
 
-  const key = word + '|' + settings.annotate + '|' + (settings.annotatePhonetic ? 1 : 0);
+  const mine = S.vocab.has(word) || S.vocab.has(dict.resolveBase(word));
+  const key = word + '|' + settings.annotate + '|' + (settings.annotatePhonetic ? 1 : 0) + '|' + (mine ? 'm' : '-');
   const hit = annoMemo.get(key);
-  if (hit !== undefined) return hit;
+  if (hit !== undefined) return hit || null;
 
-  let out = '';
+  let out = null;
   try {
     const rec = dict.lookup(word);
-    if (rec && wordLevelOf(word) >= need) {
+    // 生词本里的词一律标（这是「我自己选中的」）；其余按难度门槛
+    const qualified = !!rec && (mine || wordLevelOf(word) >= need);
+    if (qualified) {
       const raw = String(rec.translation || '');
       const tags = rec.tags || [];
       const plain = tags.length === 0 && (!rec.frq || rec.frq === 0) && (rec.collins || 0) === 0;
-      // 专有名词、以及毫无考纲/词频信息又带括号解释的条目，一律不标
-      if (!PROPER_NOISE.test(raw.split('；')[0]) && !plain) {
-        const g = shortGloss(rec);
-        if (g) out = settings.annotatePhonetic && rec.phonetic ? `${rec.phonetic} ${g}` : g;
+      const usable = mine || (!PROPER_NOISE.test(raw.split('；')[0]) && !plain);
+      if (usable) {
+        const g = shortGloss(rec, mine ? 3 : 2);
+        if (g) out = {
+          text: settings.annotatePhonetic && rec.phonetic ? `${rec.phonetic} ${g}` : g,
+          mine,
+          phonetic: rec.phonetic || '',
+        };
       }
     }
   } catch {}
   if (annoMemo.size > 30000) annoMemo.clear();
-  annoMemo.set(key, out);
+  annoMemo.set(key, out || '');
   return out;
 }
 
@@ -674,6 +702,18 @@ function showToc() {
 /* ══════════════════════════  段落翻译 / 中文对照  ══════════════════════════ */
 
 const trKey = (articleId, bi) => `tr:${articleId}:${bi}`;
+/* 备注存在 aica 表里（key 以 note: 开头），这样会跟着账号同步 */
+const noteKey = (aid, sid) => `note:${aid}:${sid}`;
+async function loadNote(aid, sid) {
+  const r = await db.get('aica', noteKey(aid, sid));
+  return (r && r.text) || '';
+}
+async function saveNote(aid, sid, text) {
+  const k = noteKey(aid, sid);
+  if (!text.trim()) await db.del('aica', k);
+  else await db.put('aica', { k, text, t: Date.now() });
+  scheduleSync();
+}
 let trRunning = false;
 
 function blockText(bi) {
@@ -694,7 +734,9 @@ function insertTranslation(bi, text) {
     host.appendChild(node);
   }
   node.dataset.trBi = String(bi);
-  node.innerHTML = `<span class="tr-tag">译</span>${esc(text)}`;
+  node.innerHTML = `<span class="tr-tag">译</span>`
+    + `<span class="spk" data-spk="${bi}" title="朗读这一段英文">\ud83d\udd0a</span>`
+    + esc(text);
   return node;
 }
 
@@ -890,6 +932,32 @@ function surfaceOf(el) {
 
 function onReaderClick(e) {
   if (isModalOpen()) return;
+
+  // ① 点注释上的小喇叭 / 注释本身 → 读这个单词，并显示音标
+  const rt = e.target.closest && e.target.closest('rt');
+  if (rt) {
+    const ruby = rt.closest('ruby.w');
+    if (ruby) {
+      const w = ruby.dataset.w || rt.textContent.replace(/[^A-Za-z'\-]/g, '');
+      tts.say(w, settings.ttsRate / 100, { slow: true });
+      const ph = ruby.dataset.ph ? `  /${ruby.dataset.ph}/` : '';
+      toast(`🔊 ${w}${ph}`, 2400);
+    }
+    return;
+  }
+
+  // ② 点译文行首的小喇叭 → 读回对应的英文原段
+  const spk = e.target.closest && e.target.closest('[data-spk]');
+  if (spk) {
+    const bi = +spk.dataset.spk;
+    const text = blockText(bi);
+    if (text) {
+      tts.say(text, settings.ttsRate / 100);
+      toast('🔊 正在朗读这一段英文', 2000);
+    }
+    return;
+  }
+
   // 点左半边 → 详情放右边；点右半边 → 详情放左边，永远不挡着正在读的地方
   try {
     const r = e.target.getBoundingClientRect();
@@ -949,7 +1017,7 @@ async function showWordPanel(surface, sid, surfaceText) {
   const rec = dict.lookup(surface);
   const base = rec?.matched || String(surface).toLowerCase();
   const surfaceForm = surfaceText || surface;
-  S.panel = { type: 'word', base, surface: surfaceForm, sid, rec };
+  S.panel = { type: 'word', base, surface: surfaceForm, sid, rec, saved: S.vocab.get(base) || null };
   markActiveWord(sid, String(surfaceText || surface).toLowerCase());
 
   $('#ph-word').textContent = surfaceForm;
@@ -1003,14 +1071,15 @@ async function showWordPanel(surface, sid, surfaceText) {
   $('#panel-body').innerHTML = dictBlock + sentBlock + aiBlock + trBlock;
 
   $('#panel-foot').innerHTML = saved
-    ? `<button class="btn" data-action="unsave">✓ 已在生词本 · 移除</button>
+    ? `<button class="btn" data-action="unsave">✓ 已在生词本 · 移除 <b class="kbd">A</b></button>
        <span style="font-size:12.5px;color:var(--fg-dim)">${srs.isDue(saved) ? '今天待复习' : '下次 ' + fmtDate(saved.due)}</span>`
-    : `<button class="btn primary" data-action="save">＋ 加入生词本</button>`;
+    : `<button class="btn primary" data-action="save">＋ 加入生词本 <b class="kbd">A</b></button>`;
 
   const extra = [];
   if (sentence) extra.push(`<button class="btn" data-action="to-sentence" data-sid="${sid}">整句翻译 · 语法</button>`);
   if (sentence) extra.push(`<button class="btn" data-action="translate-block" data-sid="${sid}">译本段</button>`);
   extra.push(`<button class="btn" data-action="copy-word">复制</button>`);
+  extra.push(`<button class="btn" data-action="close-panel">关闭 <b class="kbd">Esc</b></button>`);
   $('#panel-foot').insertAdjacentHTML('beforeend', extra.join(''));
 
   openPanel();
@@ -1039,14 +1108,45 @@ function showSentencePanel(sid) {
       <div class="def-label">原句</div>
       <div class="ctx-sent">${esc(sentence)}</div>
     </div>
-    <div class="def-block"><div class="def-label">翻译</div><div id="ai-tr" class="ai-out"></div></div>
-    <div class="def-block"><div class="def-label">语法拆解</div><div id="ai-gr" class="ai-out"></div></div>`;
+    <div class="def-block">
+      <div class="def-label" data-action="toggle-coll">翻译 <span class="caret">▾</span></div>
+      <div class="def-block-body"><div id="ai-tr" class="ai-out"></div></div>
+    </div>
+    <div class="def-block">
+      <div class="def-label" data-action="toggle-coll">语法拆解 <span class="caret">▾</span></div>
+      <div class="def-block-body"><div id="ai-gr" class="ai-out"></div></div>
+    </div>
+    <div class="def-block">
+      <div class="def-label" data-action="toggle-coll">我的备注 <span class="caret">▾</span></div>
+      <div class="def-block-body">
+        <textarea id="sent-note" class="note-box" rows="3"
+          placeholder="记点什么…（边打边自动保存，会跟着账号同步）"></textarea>
+      </div>
+    </div>`;
 
   $('#panel-foot').innerHTML = `
-    <button class="btn primary" data-action="speak-sent" data-sid="${sid}">🔊 朗读本句</button>
-    <button class="btn" data-action="copy-sent">复制</button>`;
+    <button class="btn primary" data-action="speak-sent" data-sid="${sid}">🔊 朗读本句 <b class="kbd">P</b></button>
+    <button class="btn" data-action="copy-sent">复制</button>
+    <button class="btn" data-action="close-panel">关闭 <b class="kbd">Esc</b></button>`;
 
   openPanel();
+
+  // 备注：载入 + 防抖保存
+  if (S.cur && S.cur.article) {
+    const aid = S.cur.article.id;
+    loadNote(aid, sid).then(t => {
+      const box = $('#sent-note');
+      if (box && document.activeElement !== box) box.value = t;
+    });
+    const box = $('#sent-note');
+    if (box) {
+      let timer = 0;
+      box.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => saveNote(aid, sid, box.value), 600);
+      });
+    }
+  }
 
   if (ai.hasKey()) {
     runAI($('#ai-tr'), ai.cacheKeyFor('t', [sentence]), ai.sentencePrompt({ sentence, before, after }));
@@ -1259,6 +1359,12 @@ function markWordSaved(base, on) {
     if (!w) return;
     if (w === b || dict.resolveBase(w) === b) el.classList.toggle('saved', on);
   });
+  // 注释开着时要重绘：生词本里的词用另一种配色，而且可能因此「够格」被标上释义。
+  // 这里没有做局部替换，因为要重建的可能是一个 span ↔ ruby 的结构变化，重绘最稳。
+  if (settings.annotate && settings.annotate !== 'off') {
+    annoMemo.clear();
+    rerenderReader();
+  }
 }
 
 async function saveWord(base, rec, surface, sid) {
@@ -1615,6 +1721,13 @@ function renderSettings() {
   $('#set-annotate').value = settings.annotate || 'off';
   $('#set-anno-phon').checked = !!settings.annotatePhonetic;
   $('#set-sync-ai').checked = !!settings.syncAiKey;
+  const ver = $('#version-hint');
+  if (ver) {
+    const st = (typeof dict.status === 'function') ? dict.status() : {};
+    const n = st.count || st.size || st.entries || 0;
+    ver.textContent = `精读 LexiRead v${APP_VERSION}`
+      + (n ? ` · 离线词典 ${n.toLocaleString()} 条` : '');
+  }
   $('#set-autoai').checked = !!settings.autoAI;
   $('#set-rate').value = settings.ttsRate;
   $('#set-rate-v').textContent = (settings.ttsRate / 100).toFixed(2) + '×';
@@ -1626,7 +1739,7 @@ function renderSettings() {
     $('#storage-hint').textContent =
       `本地已用 ${(u.used / 1048576).toFixed(1)} MB，可用配额约 ${(u.quota / 1048576 / 1024).toFixed(1)} GB。数据全部保存在本机，不上传服务器。`;
   });
-  $('#version-hint').textContent = '版本 v1.0 · 离线词典 ' +
+  $('#version-hint').textContent = `版本 v${APP_VERSION} · 离线词典 ` +
     (dict.status().count ? dict.status().count.toLocaleString() + ' 条' : '未加载');
 }
 
@@ -1972,6 +2085,11 @@ const ACTIONS = {
   'page-prev': () => goPage(PG.page - 1),
   'page-next': () => goPage(PG.page + 1),
   'toggle-tools': () => document.body.classList.toggle('tools-open'),
+  'toggle-coll': (btn) => {
+    const blk = btn.closest('.def-block');
+    if (blk) blk.classList.toggle('collapsed');
+  },
+  'close-panel': () => closePanel(),
   'go-ai': () => { closeModal(); setView('settings'); setTimeout(() => { const el = $('#set-base'); if (el) el.scrollIntoView({ block: 'center' }); }, 200); },
   'regen-guide': () => {
     if (!S.cur) return;
@@ -2313,7 +2431,37 @@ function wire() {
 
   // 键盘：复习时按空格显示答案，1-4 评分
   document.addEventListener('keydown', e => {
-    if (isModalOpen()) return;
+    const tag = (e.target && e.target.tagName) || '';
+    const typing = /INPUT|TEXTAREA|SELECT/.test(tag) || (e.target && e.target.isContentEditable);
+
+    if (isModalOpen()) { if (e.key === 'Escape') closeModal(); return; }
+
+    // 查词面板的快捷键：A 加入生词本 · P 发音 · Esc 关闭
+    if (!typing && !$('#panel').hidden) {
+      const k = e.key.toLowerCase();
+      if (k === 'a') {
+        e.preventDefault();
+        if (S.panel && S.panel.type === 'word') {
+          const name = S.panel.saved ? 'unsave' : 'save';
+          const el = $(`[data-action="${name}"]`);
+          if (ACTIONS[name]) ACTIONS[name](el, e);
+        } else {
+          toast('先点一个单词，再按 A 收藏', 2600);
+        }
+        return;
+      }
+      if (k === 'p') {
+        e.preventDefault();
+        const p = S.panel;
+        if (p && p.type === 'sentence') tts.say(p.sentence, settings.ttsRate / 100);
+        else if (p && p.surface) tts.say(p.surface, settings.ttsRate / 100, { slow: true });
+        return;
+      }
+      if (e.key === 'Escape') { e.preventDefault(); closePanel(); return; }
+    }
+    if (!typing && e.key === 'Escape' && S.view === 'reader') { setView('library'); return; }
+
+    if (typing) return;
     if (S.view === 'reader' && isPaged()) {
       if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); goPage(PG.page + 1); return; }
       if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); goPage(PG.page - 1); return; }
