@@ -138,6 +138,27 @@ try {
   rec(from > 100, '朗读能从当前视口位置继续（不是从头开始）', JSON.stringify({ from, sents, scroll: Math.round(before) }));
 } catch (e) { rec(false, '朗读能从当前视口位置继续（不是从头开始）', e.message); }
 
+/* ── 大文章开启分级注释：懒渲染路径下也要能出注释 ── */
+try {
+  const raw = JSON.parse(W().localStorage.getItem('lexiread.settings') || '{}');
+  raw.annotate = 'cet6';
+  W().localStorage.setItem('lexiread.settings', JSON.stringify(raw));
+  W().location.reload();
+  await wait(2500);
+  await waitFor(() => D().querySelectorAll('#reader-body .w').length > 50, 45000, '大书重载');
+  const t0 = performance.now();
+  let ruby = 0;
+  for (let i = 0; i < 80; i++) {
+    ruby = D().querySelectorAll('#reader-body ruby.w').length;
+    if (ruby > 0) break;
+    await wait(250);
+  }
+  const words = D().querySelectorAll('#reader-body .w').length;
+  const gloss = (D().querySelector('#reader-body ruby.w rt') || {}).textContent || '';
+  rec(ruby > 0 && words > 50, '5.8 万词的大书：懒渲染下注释照样能出来',
+    JSON.stringify({ 注释数: ruby, 已渲染词数: words, 样例: gloss, 等待毫秒: Math.round(performance.now() - t0) }));
+} catch (e) { rec(false, '5.8 万词的大书：懒渲染下注释照样能出来', e.message); }
+
 const pass = results.filter(r => r[0]).length;
 document.getElementById('out').innerHTML = `<h3>${pass}/${results.length}</h3>` +
   results.map(([ok, n, i]) => `<div class="${ok ? 'pass' : 'fail'}">${ok ? '✓' : '✗'} ${n} ${i}</div>`).join('');

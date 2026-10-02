@@ -3,7 +3,7 @@
    离线词典：cache-first（2.9MB，装一次就够了）
    AI 接口与外部抓取：直连网络，永不缓存           */
 
-const VERSION = 'lexiread-v16';
+const VERSION = 'lexiread-v21';
 const SHELL = [
   './',
   './index.html',

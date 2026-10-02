@@ -67,6 +67,18 @@ try {
   rec(true, '应用启动并渲染书架');
 } catch (e) { rec(false, '应用启动并渲染书架', e.message); }
 
+/* 0 ── 先把「已看过欢迎页」置位并重载：
+   否则欢迎页会在某些时序下挡住后续所有操作（这是之前 flake 的真正来源） */
+try {
+  W().localStorage.setItem('lexiread.onboarded', '1');
+  W().location.reload();
+  await wait(2200);
+  await waitFor(() => D().querySelector('body') && D().querySelector('body').dataset.ready === '1', 20000, '应用就绪');
+  await wait(400);
+  rec(!D().querySelector('#view-welcome').classList.contains('is-on'),
+    '设置过 onboarding 后不再显示欢迎页', D().querySelector('#view-welcome').className);
+} catch (e) { rec(false, '设置过 onboarding 后不再显示欢迎页', e.message); }
+
 /* 1 ── 导入文章 */
 let importDiag = '';
 try {
@@ -363,19 +375,19 @@ try {
   const keys = await W().caches.keys();
   let shell = {};
   try {
-    const c = await W().caches.open('lexiread-v16');
+    const c = await W().caches.open('lexiread-v21');
     for (const u of ['./index.html', './src/app.js', './styles.css', './icons/icon-192.png']) {
       shell[u] = !!(await c.match(u));
     }
   } catch (e) { shell = { err: e.message }; }
-  const ok = ctrl && keys.includes('lexiread-v16') && Object.values(shell).every(Boolean);
+  const ok = ctrl && keys.includes('lexiread-v21') && Object.values(shell).every(Boolean);
   rec(ok, 'Service Worker 接管并缓存应用外壳（离线可用）',
     JSON.stringify({ ctrl, keys, shell }).slice(0, 160));
 } catch (e) { rec(false, 'Service Worker 接管并缓存应用外壳（离线可用）', e.message); }
 
 /* 22 ── 词典已缓存，可离线查词 */
 try {
-  const c = await W().caches.open('lexiread-v16');
+  const c = await W().caches.open('lexiread-v21');
   const hit = await c.match(new URL('./data/dict.json', W().location.href).href);
   const size = hit ? (await hit.clone().text()).length : 0;
   rec(!!hit && size > 1000000, '离线词典已进入缓存', JSON.stringify({ size }));
@@ -620,6 +632,63 @@ try {
   D().querySelector('#tabbar .tab[data-tab="library"]').click();
   await wait(300);
 } catch (e) { rec(false, '设置里有「把 AI 配置同步到其它设备」开关（默认关闭）', e.message); }
+
+/* 37 ── 工具栏「A 注释」一键切换 */
+try {
+  if (!D().querySelector('#panel').hidden) { D().querySelector('#ph-close').click(); await wait(300); }
+  const btn = D().querySelector('[data-action="toggle-annotate"]');
+  if (!btn) throw new Error('工具栏没有「A 注释」按钮');
+  D().querySelector('#tabbar .tab[data-tab="library"]').click();
+  await waitFor(() => D().querySelector('#article-list .card [data-open]'), 6000, '书架');
+  D().querySelector('#article-list .card [data-open]').click();
+  await waitFor(() => D().querySelectorAll('#reader-body .w').length > 20, 10000, '阅读器');
+  // 先从「关闭」开始，才看得出一次点击的效果
+  const raw = JSON.parse(W().localStorage.getItem('lexiread.settings') || '{}');
+  raw.annotate = 'off';
+  W().localStorage.setItem('lexiread.settings', JSON.stringify(raw));
+  W().location.reload();
+  await wait(2500);
+  // 刷新后应用回到书架，需要重新点开文章
+  await waitFor(() => D().querySelector('#article-list .card [data-open]'), 15000, '书架重载');
+  D().querySelector('#article-list .card [data-open]').click();
+  await waitFor(() => D().querySelectorAll('#reader-body .w').length > 20, 15000, '阅读器重载');
+  await wait(700);
+  const before = D().querySelectorAll('#reader-body ruby.w').length;
+  D().querySelector('[data-action="toggle-annotate"]').click();
+  let after = 0;
+  for (let i = 0; i < 40; i++) {
+    after = D().querySelectorAll('#reader-body ruby.w').length;
+    if (after > before) break;
+    await wait(250);
+  }
+  const lvl = (JSON.parse(W().localStorage.getItem('lexiread.settings') || '{}')).annotate;
+  rec(before === 0 && after > 0,
+    '工具栏「A 注释」一点就出注释（不用去设置里找）',
+    JSON.stringify({ 点之前: before, 点之后: after, 级别: lvl }));
+} catch (e) { rec(false, '工具栏「A 注释」一点就出注释（不用去设置里找）', e.message); }
+
+/* 38 ── 「中 译文」只翻当前页，不整篇翻 */
+try {
+  // 换一篇多页的文章，统计翻页数
+  D().querySelector('#tabbar .tab[data-tab="library"]').click();
+  await waitFor(() => D().querySelector('#article-list .card [data-open]'), 6000, '书架');
+  const cards = D().querySelectorAll('#article-list .card [data-open]');
+  cards[cards.length - 1].click();
+  await waitFor(() => D().querySelectorAll('#reader-body .w').length > 20, 10000, '阅读器');
+  await wait(600);
+  const pageTxt = (D().querySelector('#reader-page') || {}).textContent || '';
+  const totalPages = parseInt((pageTxt.match(/\/\s*(\d+)/) || [])[1] || '1', 10);
+  const paras = D().querySelectorAll('#reader-body [data-bi]').length;
+  const before = (await (await fetch('/__mock_last')).json()).count;
+  D().querySelector('[data-action="toggle-translation"]').click();
+  // 给足时间：如果是整篇翻，一定会打满 paras 次请求
+  await wait(6000);
+  const after = (await (await fetch('/__mock_last')).json()).count;
+  const used = after - before;
+  rec(used > 0 && used < paras,
+    '「中 译文」只翻当前这一页，不会把整篇都翻掉',
+    JSON.stringify({ 总页数: totalPages, 总段数: paras, 本页实际请求: used }));
+} catch (e) { rec(false, '「中 译文」只翻当前这一页，不会把整篇都翻掉', e.message); }
 
 /* 输出 */
 const pass = results.filter(r => r[0]).length;

@@ -328,6 +328,12 @@ function goPage(p, smooth = true) {
   body.style.transform = `translateX(${-PG.page * PG.step}px)`;
   if (!smooth) requestAnimationFrame(() => { body.style.transition = ''; });
   updatePageChrome();
+  if (settings.showTranslation && !trRunning) {
+    clearTimeout(goPage._trT);
+    goPage._trT = setTimeout(() => {
+      translateCurrentPage({ silent: true }).catch(() => {});
+    }, 450);
+  }
   if (S.cur.article) {
     S.cur.article.progress = PG.total > 1 ? PG.page / (PG.total - 1) : 0;
     S.cur.article.updated = touch();
@@ -724,6 +730,49 @@ function orderedTranslationTargets(parsed) {
   return onPage.concat(rest);
 }
 
+/** 当前这一页包含哪些段落（滚动模式下取视口内的） */
+function currentPageTargets() {
+  if (!S.cur) return [];
+  const { parsed } = S.cur;
+  const all = [];
+  parsed.blocks.forEach((b, bi) => { if (b.type !== 'h') all.push(bi); });
+  if (!all.length) return [];
+
+  if (!isPaged()) {
+    const vp = $('#reader-viewport') || document.documentElement;
+    const top = vp === document.documentElement ? 0 : vp.getBoundingClientRect().top;
+    const bottom = vp === document.documentElement ? innerHeight : vp.getBoundingClientRect().bottom;
+    const inView = all.filter(bi => {
+      const el = $(`#reader-body [data-bi="${bi}"]`);
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return r.bottom > top - 40 && r.top < bottom + 40;
+    });
+    return inView.length ? inView : all.slice(0, 3);
+  }
+
+  if (!PG.blockX || !PG.blockX.length) return all.slice(0, 3);
+  const start = PG.page * PG.step;
+  const onPage = all.filter(bi => {
+    const x = PG.blockX[bi];
+    return x !== undefined && x >= start - 1 && x < start + PG.step;
+  });
+  return onPage;
+}
+
+/** 只翻当前这一页 —— 便宜、快，读者要的就是眼前这段 */
+async function translateCurrentPage(opts = {}) {
+  const targets = currentPageTargets();
+  if (!targets.length) return;
+  const pend = [];
+  for (const bi of targets) {
+    const hit = await db.get('aica', trKey(S.cur.article.id, bi));
+    if (!(hit && hit.text)) pend.push(bi);
+  }
+  if (!pend.length) { if (opts.silent !== true) toast('本页译文已经有了（来自缓存）'); return; }
+  await runTranslateQueue(pend, { label: '本页', confirmLong: false });
+}
+
 /** 整篇翻译：并发 3 路，当前页优先，边翻边显示，带进度 */
 async function translateArticle(force = false) {
   if (!S.cur || trRunning) return;
@@ -733,16 +782,26 @@ async function translateArticle(force = false) {
   const targets = orderedTranslationTargets(parsed);
   if (!targets.length) { toast('这篇文章没有可翻译的正文'); return; }
 
-  if (parsed.words > 8000 && !force) {
+  if (parsed.words > 3000 && !force) {
     const ok = confirm('这篇有 ' + parsed.words.toLocaleString() + ' 个词，\n'
-      + '全文翻译大约要花几毛钱（已经翻过的段落不会重复收费）。\n\n确定继续吗？');
+      + '整篇翻译会需要不少时间和费用（已经翻过的段落不会重复收费）。\n\n'
+      + '只是想看懂眼前这一页的话，点「取消」，直接用「中 译文」即可 —— 它只翻当前页。');
     if (!ok) return;
   }
+  await runTranslateQueue(targets, { label: '整篇', confirmLong: false });
 
+  trRunning = false;
+}
+
+/** 翻译队列：并发 3 路，边翻边显示，带进度 */
+async function runTranslateQueue(targets, opts = {}) {
+  if (!S.cur || trRunning || !targets.length) return;
+  if (!ai.hasKey()) { toast('需要先在「设置 → AI 引擎」填 API Key', 4500); setView('settings'); return; }
+  const { article } = S.cur;
   trRunning = true;
   const bar = $('#tr-progress');
   const show = t => { if (bar) { bar.hidden = false; bar.textContent = t; } };
-  show(`正在翻译（本页优先）· 共 ${targets.length} 段…`);
+  show(`正在翻译${opts.label || ''} · 共 ${targets.length} 段…`);
 
   let done = 0, cached = 0, failed = 0;
   const queue = [...targets];
@@ -768,7 +827,7 @@ async function translateArticle(force = false) {
     if (isPaged()) relayoutPages(true);
     toast(failed
       ? `翻译完成 ${done - failed} 段，${failed} 段失败`
-      : `翻译完成：${targets.length} 段（${cached} 段命中缓存，没重复花钱）`, 4000);
+      : `翻译完成${opts.label || ''}：${targets.length} 段（${cached} 段命中缓存，没重复花钱）`, 3500);
   } finally {
     trRunning = false;
     if (bar) { bar.hidden = true; bar.textContent = ''; }
@@ -981,7 +1040,13 @@ function runAI(el, key, messages, opts = {}) {
 
   const paint = () => {
     raf = 0;
-    if (!firstPaint) { el.innerHTML = ''; firstPaint = true; }
+    // 关键：只有拿到**非空**内容才清掉加载态。
+    // 否则网关先吐一个空 chunk 就会把界面清空，看起来「什么都没出来」。
+    if (!firstPaint) {
+      if (!acc.trim()) return;
+      el.innerHTML = '';
+      firstPaint = true;
+    }
     el.innerHTML = renderRich(acc);
     el.classList.add('stream-cursor');
   };
@@ -991,9 +1056,16 @@ function runAI(el, key, messages, opts = {}) {
     if (cached) { el.innerHTML = renderRich(acc); el.classList.remove('stream-cursor'); return; }
     if (!raf) raf = requestAnimationFrame(paint);
   }, { signal: ac.signal, ...opts })
-    .then(() => {
+    .then(full => {
       el.classList.remove('stream-cursor');
-      if (!acc) el.innerHTML = '<div class="err-box">AI 没有返回内容，请重试。</div>';
+      const got = (acc || full || '').trim();
+      if (!got) {
+        el.innerHTML = '<div class="err-box">AI 这次没有返回内容（可能是网关超时或额度问题）。</div>'
+          + '<div style="margin-top:10px"><button class="btn primary" data-action="retry-ai">重新生成</button>'
+          + '<button class="btn" data-action="go-ai">检查 AI 设置</button></div>';
+        return;
+      }
+      if (!firstPaint) { el.innerHTML = renderRich(got); firstPaint = true; }
     })
     .catch(err => {
       if (err && err.name === 'AbortError') return;
@@ -1799,20 +1871,31 @@ const ACTIONS = {
       if (btn) btn.classList.toggle('is-on', settings.showTranslation);
       if (!settings.showTranslation) { removeTranslations(); toast('已隐藏译文'); return; }
 
-      const missing = await applyCachedTranslations();
-      if (missing > 0) {
-        if (!ai.hasKey()) {
-          toast('要翻译需要先填 API Key：设置 → AI 引擎', 5500);
-          setView('settings');
-          return;
-        }
-        translateArticle();
-      } else {
-        toast('译文已显示（全部来自缓存，没花钱）');
+      if (!ai.hasKey()) {
+        toast('要翻译需要先填 API Key：设置 → AI 引擎', 5500);
+        setView('settings');
+        return;
       }
+      await applyCachedTranslations();
+      // 只翻当前这一页 —— 不整篇翻，快又省
+      await translateCurrentPage({ silent: true });
+      toast('已显示本页译文（想翻整篇点「译全篇」）', 3500);
     } catch (e) {
       toast('打开译文失败：' + (e.message || e), 5000);
     }
+  },
+  'translate-article': () => translateArticle(),
+  'toggle-annotate': (btn) => {
+    const order = ['off', 'cet6', 'ky', 'toefl'];
+    const i = order.indexOf(settings.annotate || 'off');
+    settings.annotate = order[(i + 1) % order.length];
+    saveSettings(); annoMemo.clear();
+    if (btn) btn.classList.toggle('is-on', settings.annotate !== 'off');
+    rerenderReader();
+    const label = { off: '已关闭注释', cet6: '六级以上', ky: '考研以上', toefl: '托福/雅思以上' };
+    toast(settings.annotate === 'off'
+      ? '已关闭生词注释'
+      : `注释已开启：${label[settings.annotate]}的词会在头顶标出简短释义`, 4000);
   },
   'translate-block': async (btn) => {
     if (!S.cur) return;
