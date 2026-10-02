@@ -82,6 +82,16 @@ try {
     'EPUB 正文能被阅读器正确切段分句', JSON.stringify({ b: p.blocks.length, s: p.sentences.length, w: p.words }));
 } catch (e) { rec(false, 'EPUB 正文能被阅读器正确切段分句', e.message); }
 
+/* ── 章节识别（目录要用） ── */
+try {
+  const f = await fixture('sample.epub');
+  const r = await importEpub(await f.arrayBuffer(), f.name);
+  const p = parseArticle(r.text, r.title);
+  const heads = p.blocks.filter(b => b.type === 'h').map(b => b.sentences.map(x => x.text).join(' '));
+  rec(heads.length >= 2 && heads.some(h => /Chapter One/i.test(h)) && heads.some(h => /Chapter Two/i.test(h)),
+    'EPUB 的章节标题被识别为标题块（可用于生成目录）', JSON.stringify(heads));
+} catch (e) { rec(false, 'EPUB 的章节标题被识别为标题块（可用于生成目录）', e.message); }
+
 /* ── DOCX ── */
 try {
   const f = await fixture('sample.docx');

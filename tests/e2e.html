@@ -361,19 +361,19 @@ try {
   const keys = await W().caches.keys();
   let shell = {};
   try {
-    const c = await W().caches.open('lexiread-v12');
+    const c = await W().caches.open('lexiread-v15');
     for (const u of ['./index.html', './src/app.js', './styles.css', './icons/icon-192.png']) {
       shell[u] = !!(await c.match(u));
     }
   } catch (e) { shell = { err: e.message }; }
-  const ok = ctrl && keys.includes('lexiread-v12') && Object.values(shell).every(Boolean);
+  const ok = ctrl && keys.includes('lexiread-v15') && Object.values(shell).every(Boolean);
   rec(ok, 'Service Worker 接管并缓存应用外壳（离线可用）',
     JSON.stringify({ ctrl, keys, shell }).slice(0, 160));
 } catch (e) { rec(false, 'Service Worker 接管并缓存应用外壳（离线可用）', e.message); }
 
 /* 22 ── 词典已缓存，可离线查词 */
 try {
-  const c = await W().caches.open('lexiread-v12');
+  const c = await W().caches.open('lexiread-v15');
   const hit = await c.match(new URL('./data/dict.json', W().location.href).href);
   const size = hit ? (await hit.clone().text()).length : 0;
   rec(!!hit && size > 1000000, '离线词典已进入缓存', JSON.stringify({ size }));
@@ -512,6 +512,66 @@ try {
     rec(true, '点「译本段」能触发翻译', JSON.stringify({ 请求: after - before }));
   }
 } catch (e) { rec(false, '点词面板里有「译本段」按钮', e.message); }
+
+/* 30 ── 变形词收藏后正文里也要画线（words → word） */
+try {
+  if (!D().querySelector('#panel').hidden) { D().querySelector('#ph-close').click(); await wait(300); }
+  const el = D().querySelector('#reader-body .w[data-w="words"]');
+  if (!el) throw new Error('文章里找不到 words');
+  el.click();
+  await waitFor(() => !D().querySelector('#panel').hidden, 6000, '面板');
+  const lemmaTag = D().querySelector('#ph-sub [data-action="lookup-word"]');
+  D().querySelector('[data-action="save"]').click();
+  await waitFor(() => D().querySelector('#panel-foot [data-action="unsave"]'), 6000, '已收藏');
+  const marked = D().querySelectorAll('#reader-body .w[data-w="words"].saved').length;
+  if (!D().querySelector('#panel').hidden) D().querySelector('#ph-close').click();
+  rec(marked > 0 && !!lemmaTag, '收藏变形词（words→word）后正文里照样画上了线',
+    JSON.stringify({ 画线数: marked, 有原形跳转: !!lemmaTag }));
+} catch (e) { rec(false, '收藏变形词（words→word）后正文里照样画上了线', e.message); }
+
+/* 31 ── 目录 */
+try {
+  D().querySelector('[data-action="toc"]').click();
+  await waitFor(() => D().querySelectorAll('.toc-item').length > 0, 6000, '目录');
+  const n = D().querySelectorAll('.toc-item').length;
+  const first = (D().querySelector('.toc-item') || {}).textContent || '';
+  D().querySelector('[data-action="modal-close"]').click();
+  await wait(300);
+  rec(n > 0 && first.trim().length > 1, '目录能列出章节并可跳转', JSON.stringify({ 条目数: n, 首条: first.trim().slice(0, 24) }));
+} catch (e) { rec(false, '目录能列出章节并可跳转', e.message); }
+
+/* 32 ── 分级注释：六级以上的词自动标出中文 */
+try {
+  D().querySelector('#btn-settings').click();
+  await waitFor(() => D().querySelector('#set-annotate'), 5000, '设置页');
+  const sel = D().querySelector('#set-annotate');
+  sel.value = 'cet6';
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(700);
+  // 用真实路径回阅读器：书架 → 打开文章
+  D().querySelector('#tabbar .tab[data-tab="library"]').click();
+  await waitFor(() => D().querySelector('#article-list .card [data-open]'), 6000, '书架');
+  D().querySelector('#article-list .card [data-open]').click();
+  await waitFor(() => D().querySelectorAll('#reader-body .w').length > 20, 10000, '回到阅读器');
+  await wait(1000);
+  const rubies = D().querySelectorAll('#reader-body ruby.w').length;
+  const total = D().querySelectorAll('#reader-body .w').length;
+  const sample = rubies ? (D().querySelector('#reader-body ruby.w rt') || {}).textContent : '';
+  // 基础词绝不能被标注：can / in / is / day 这类
+  const basics = ['can', 'in', 'is', 'day', 'the', 'a']
+    .filter(w => D().querySelector(`#reader-body ruby.w[data-w="${w}"]`));
+  rec(rubies > 0 && (sample || '').length > 0 && rubies < total * 0.45 && basics.length === 0,
+    '选「六级以上」后只标真正的难词（基础词不标）',
+    JSON.stringify({ 注释数: rubies, 总词数: total, 样例: sample, 被误标的基础词: basics }));
+} catch (e) { rec(false, '选「六级以上」后，难词自动带上了中文注释', e.message); }
+
+/* 33 ── 页脚显示页码 + 按字数的百分比 */
+try {
+  const txt = (D().querySelector('#reader-page') || {}).textContent || '';
+  const hasPct = /\d+\s*\/\s*\d+\s*·\s*\d+%/.test(txt);
+  const atEnd = txt.trim().startsWith('1 /') ? txt.includes('0%') : true;
+  rec(hasPct, '页脚同时显示页码和阅读百分比', txt);
+} catch (e) { rec(false, '页脚同时显示页码和阅读百分比', e.message); }
 
 /* 输出 */
 const pass = results.filter(r => r[0]).length;

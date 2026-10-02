@@ -182,10 +182,11 @@ html[data-mode="page"] .rh-bar{ display:flex; align-items:center; gap:6px;
   max-width: var(--measure); margin: 0 auto; }
 html[data-mode="page"] #reader-title{ font-size:15px; }
 html[data-mode="page"] .reader-tools{
-  max-width: var(--measure); margin: 8px auto 0; justify-content:center;
-  opacity:0; max-height:0; overflow:hidden; transition: opacity .18s, max-height .18s; }
-html[data-mode="page"] body.tools-open .reader-tools,
-html[data-mode="page"] .reader-head:hover .reader-tools{ opacity:1; max-height:60px; }
+  max-width: var(--measure); margin: 6px auto 2px; justify-content:center;
+  opacity:1; max-height:none; overflow:visible; flex-wrap:nowrap;
+  overflow-x:auto; scrollbar-width:none; padding-bottom:2px; }
+html[data-mode="page"] .reader-tools::-webkit-scrollbar{ display:none; }
+html[data-mode="page"] .reader-tools .tool{ padding:5px 11px; font-size:12.5px; white-space:nowrap; }
 html[data-mode="page"] .reader-meta{ display:none; }
 html[data-mode="page"] .reader-body{
   max-width: none; margin: 0; padding: 0; width: 100%; height: 100%;
@@ -272,12 +273,36 @@ body.focus-mode #topbar, body.focus-mode #tabbar{ transition: opacity .3s; }
   border-radius:999px; padding:7px 14px; font-size:13.5px; font-weight:550; }
 .seg-btn.is-on{ background: var(--bg-elev); color: var(--fg); box-shadow: 0 1px 4px rgba(0,0,0,.10); }
 
+/* ── 分级注释（ruby 行间注） ── */
+.reader-body ruby.w{ ruby-align: center; ruby-position: over; }
+.reader-body ruby.w rt{
+  font-family: var(--ff-sans); font-size: 9.5px; line-height: 1.15;
+  color: color-mix(in srgb, var(--accent) 80%, var(--fg-dim));
+  font-weight: 500; letter-spacing: -.2px; user-select: none;
+  padding-bottom: 2px;
+}
+html[data-justify="1"] .reader-body ruby.w rt{ hyphens: none; }
+/* 有注释的行之间要多留一点空间，否则上标会挤在一起 */
+.reader-body p:has(ruby.w){ line-height: calc(var(--lh) + .35); }
+
+/* ── 目录 ── */
+.toc-list{ max-height: 54vh; overflow-y: auto; margin: 0 -4px; }
+.toc-item{
+  display: block; width: 100%; text-align: left; border: none; background: transparent;
+  color: var(--fg); font-size: 14.5px; line-height: 1.55; padding: 10px 12px;
+  border-radius: var(--radius-sm); border-bottom: 1px solid var(--line);
+  font-family: var(--ff-serif);
+}
+.toc-item:hover{ background: var(--accent-soft); color: var(--accent); }
+.toc-item:last-child{ border-bottom: none; }
+.toc-idx{ color: var(--fg-faint); margin-right: 6px; }
+
 /* ── 中文对照译文 ── */
 .tr-block{
   font-size: calc(var(--fs) * 0.8); line-height: 1.8; color: var(--fg-dim);
-  margin: .1em 0 1.05em; padding: 6px 0 6px 11px;
+  display: block; margin: .5em 0 .15em; padding: 5px 0 4px 11px;
   border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  break-inside: avoid-column; -webkit-column-break-inside: avoid;
+  break-inside: avoid; break-before: avoid; -webkit-column-break-inside: avoid;
   text-indent: 0; animation: fade .25s;
 }
 .tr-block .tr-tag{
@@ -532,10 +557,17 @@ html[data-mode="page"] #tr-progress{ position: fixed; left:0; right:0;
     animation: slide-in .22s ease;
   }
   @keyframes slide-in{ from{ transform: translateX(100%) } to{ transform:none } }
+  @keyframes slide-in-left{ from{ transform: translateX(-100%) } to{ transform:none } }
   #scrim{ display:none !important; }
   .panel-grip{ display:none; }
   .panel-head{ padding-top:16px; }
-  body.panel-open #main{ padding-right:420px; }
+  /* 详情面板放在点击位置的「对面」，不挡着正在读的地方 */
+  body.panel-right #main{ padding-right:420px; padding-left:0; }
+  body.panel-left #main{ padding-left:420px; padding-right:0; }
+  body.panel-left #panel{
+    left:0; right:auto; box-shadow: 1px 0 0 var(--line);
+    animation: slide-in-left .22s ease;
+  }
   #tabbar{ position:sticky; }
 }
 @media (max-width: 899px){

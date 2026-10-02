@@ -83,6 +83,8 @@
         <button class="tool" data-action="tts-stop">⏹ 停止</button>
         <button class="tool" data-action="toggle-translation">中 译文</button>
         <button class="tool" data-action="article-guide">✨ 导读</button>
+        <button class="tool" data-action="toc">☰ 目录</button>
+        <button class="tool" data-action="toggle-fullscreen">⛶ 全屏</button>
         <button class="tool" data-action="toggle-focus">◎ 专注</button>
         <button class="tool" data-action="reader-settings">Aa 排版</button>
       </div>
@@ -212,6 +214,19 @@
       <label class="field"><span>显示中文译文（对照阅读）</span>
         <input id="set-translation" type="checkbox">
       </label>
+      <label class="field"><span>生词注释</span>
+        <select id="set-annotate">
+          <option value="off">关闭</option>
+          <option value="cet4">四级以上的词都标释义</option>
+          <option value="cet6">六级以上</option>
+          <option value="ky">考研以上</option>
+          <option value="toefl">托福 / 雅思以上</option>
+          <option value="gre">GRE</option>
+        </select>
+      </label>
+      <label class="field"><span>注释里带音标</span>
+        <input id="set-anno-phon" type="checkbox">
+      </label>
       <label class="field"><span>点词后自动请求 AI 讲解</span>
         <input id="set-autoai" type="checkbox">
       </label>
@@ -221,6 +236,7 @@
       <h2>朗读</h2>
       <label class="field"><span>语速</span><input id="set-rate" type="range" min="50" max="150" step="5"><b id="set-rate-v"></b></label>
       <label class="field"><span>音色</span><select id="set-voice"></select></label>
+      <p class="hint" id="voice-hint" style="margin:6px 0 0"></p>
     </div>
 
     <div class="set-group">

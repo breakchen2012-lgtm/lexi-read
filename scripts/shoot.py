@@ -124,6 +124,16 @@ SHOTS = [
     dict(name='09-paged-phone', url=f'{BASE}/index.html?article=demo-article', w=402, h=874,
          wait="document.querySelectorAll('#reader-body .w').length>60 && document.querySelector('#reader-page').textContent!=='1 / 1'",
          settle=900, dpr=2, theme='light'),
+    dict(name='12-annotate', url=f'{BASE}/index.html?article=demo-article',
+         w=1024, h=768, settle=1200, dpr=2, theme='light',
+         wait="document.querySelectorAll('#reader-body ruby.w').length>3",
+         setup="const s=JSON.parse(localStorage.getItem('lexiread.settings')||'{}');"
+               "s.annotate='cet6'; s.showTranslation=false; s.annotatePhonetic=false;"
+               "localStorage.setItem('lexiread.settings', JSON.stringify(s));"),
+    dict(name='13-toc', url=f'{BASE}/index.html?article=demo-article',
+         w=402, h=874, settle=900, dpr=2, theme='light',
+         wait="document.querySelector('#reader-body .w')!==null",
+         actions="document.querySelector('[data-action=\"toc\"]').click()"),
     dict(name='11-bilingual', url=f'{BASE}/index.html?article=demo-article', w=1024, h=768,
          wait="document.querySelectorAll('#reader-body .tr-block').length>1",
          settle=900, dpr=2, theme='light',

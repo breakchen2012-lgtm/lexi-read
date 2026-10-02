@@ -199,14 +199,42 @@ export function lookup(word) {
     const r = parseLine(index.get(irr));
     return { ...r, matched: irr, exact: false, via: '原形 ' + irr, lemma: null };
   }
+  // 收集所有候选，按「常用程度」挑最好的，而不是碰运气取第一个。
+  // 例：comes 的候选有 com（缩写）和 come —— come 的词频远高于 com，必须选 come。
+  const cands = [];
   for (const v of variants(w)) {
     const j = index.get(v);
-    if (j !== undefined) {
-      const r = parseLine(j);
-      return { ...r, matched: v, exact: false, via: '原形 ' + v, lemma: null };
-    }
+    if (j !== undefined) cands.push({ v, r: parseLine(j) });
+  }
+  if (cands.length) {
+    cands.sort((a, b) => {
+      const fa = a.r.frq || 1e9, fb = b.r.frq || 1e9;   // 词频数字越小越常用
+      if (fa !== fb) return fa - fb;
+      return (b.r.collins || 0) - (a.r.collins || 0);
+    });
+    const best = cands[0];
+    return { ...best.r, matched: best.v, exact: false, via: '原形 ' + best.v, lemma: null };
   }
   return null;
+}
+
+/** 只取原形，带缓存。用于给文中每个词判断「是不是已收藏的生词」——
+ *  存进去的是原形（run），文中却是变形（running），必须还原后才能比对。 */
+const baseMemo = new Map();
+export function resolveBase(word) {
+  const w = String(word || '').toLowerCase().replace(/[’]/g, "'");
+  if (!w) return w;
+  const hit = baseMemo.get(w);
+  if (hit !== undefined) return hit;
+  let base = w;
+  try {
+    const r = lookup(w);
+    // 精确命中的词也可能有词形提示（words 的释义里写着「word 的复数」），要优先用它
+    if (r) base = (r.exact && r.lemma) ? r.lemma : (r.matched || w);
+  } catch {}
+  if (baseMemo.size > 30000) baseMemo.clear();
+  baseMemo.set(w, base);
+  return base;
 }
 
 /** 模糊搜索（前缀），用于词典页 */

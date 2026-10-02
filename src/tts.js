@@ -12,16 +12,30 @@ export function supported() {
   return typeof window !== 'undefined' && 'speechSynthesis' in window;
 }
 
+/* macOS / iOS 自带一堆「玩具音色」，还有质量很差的 compact 版本，都要排到后面去 */
+const NOVELTY = /^(albert|bad news|bahh|bells|boing|bubbles|cellos|deranged|good news|jester|organ|superstar|trinoids|whisper|wobble|zarvox|bork|doodle|flo|grandma|grandpa|rocko|shelley|sandy|reed|eddy|junior|ralph|kathy|fred|bruce|agnes|princess|victoria|alex\b)/i;
+const PREMIUM = /(siri|premium|enhanced|neural|natural|google|eloquence)/i;
+
+function voiceScore(v) {
+  let s = 0;
+  const n = v.name || '';
+  if (/en[-_]US/i.test(v.lang)) s -= 40;
+  else if (/en[-_]GB/i.test(v.lang)) s -= 30;
+  else if (/en[-_](AU|IE|NZ|CA)/i.test(v.lang)) s -= 15;
+  if (/siri/i.test(n)) s -= 60;                       // Siri 的自然度最好
+  else if (PREMIUM.test(n)) s -= 30;
+  if (/premium|enhanced/i.test(n)) s -= 25;           // 用户下载的高质量音色
+  if (/compact/i.test(n)) s += 45;                    // 紧凑版最生硬
+  if (NOVELTY.test(n.trim())) s += 200;               // 玩具音色，直接垫底
+  if (v.localService === false) s -= 5;               // 网络音色通常更自然
+  return s;
+}
+
 export function voices() {
   if (!supported()) return [];
   return speechSynthesis.getVoices()
     .filter(v => /^en/i.test(v.lang))
-    .sort((a, b) => {
-      const score = v =>
-        (/en[-_]US/i.test(v.lang) ? 0 : /en[-_]GB/i.test(v.lang) ? 1 : 2) +
-        (/Siri|Samantha|Daniel|Karen|Alex|Google|Natural|Enhanced|Premium/i.test(v.name) ? 0 : 1);
-      return score(a) - score(b);
-    });
+    .sort((a, b) => voiceScore(a) - voiceScore(b));
 }
 
 export function onVoicesReady(cb) {
@@ -38,7 +52,18 @@ function pickVoice() {
     const hit = list.find(v => v.voiceURI === cfg.voiceURI || v.name === cfg.voiceURI);
     if (hit) return hit;
   }
-  return list[0];
+  return list[0];                                   // voices() 已按质量排序
+}
+
+/** 当前实际会用的音色名，界面上显示出来，让人知道用的是哪个 */
+export function currentVoiceName() {
+  const v = pickVoice();
+  return v ? v.name : '系统默认';
+}
+
+/** 系统里有没有「高质量」音色（Siri / 增强版 / 高级版） */
+export function hasPremiumVoice() {
+  return voices().some(v => PREMIUM.test(v.name) || /premium|enhanced/i.test(v.name));
 }
 
 export function stop() {
@@ -96,14 +121,17 @@ function next() {
 export function isPlaying() { return playing; }
 
 /** 朗读单个片段 */
-export function say(text, rate) {
+export function say(text, rate, opts = {}) {
   if (!supported()) return;
   try {
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     const v = pickVoice();
     if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-US';
-    u.rate = rate || Math.max(0.4, Math.min(1.6, cfg.rate));
+    const base = rate || Math.max(0.4, Math.min(1.6, cfg.rate));
+    // 单个单词读慢一些，音素更清楚；整句保持用户设定的语速
+    u.rate = opts.slow ? Math.max(0.4, base * 0.82) : base;
+    u.pitch = 1;
     speechSynthesis.speak(u);
   } catch {}
 }

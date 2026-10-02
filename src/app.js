@@ -5,7 +5,7 @@ import * as dict from './dict.js';
 import * as ai from './ai.js';
 import * as tts from './tts.js';
 import * as srs from './srs.js';
-import { parseArticle, tokensOf } from './text.js';
+import { parseArticle, tokensOf, countWords } from './text.js';
 import { importFile, ACCEPT, FORMATS } from './importers.js';
 import * as sync from './sync.js';
 import {
@@ -24,6 +24,8 @@ const DEFAULT_SETTINGS = {
   readingMode: 'page',    // page=翻页（像书一样） scroll=滚动
   columns: 'auto',        // auto=宽屏两栏 one=始终一栏
   showTranslation: false, // 中文对照
+  annotate: 'off',        // 分级注释：off / cet4 / cet6 / ky / toefl / gre
+  annotatePhonetic: false,// 注释里是否带音标
 };
 let settings = (() => {
   try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SET_KEY) || '{}') }; }
@@ -201,6 +203,9 @@ async function openArticle(id) {
   article.updated = touch();
   persistArticle(article);                              // 只写元数据，很轻
 
+  if (settings.annotate && settings.annotate !== 'off' && !dict.ready()) {
+    try { await dict.load(); } catch {}          // 注释需要词典，先等它到位
+  }
   renderReader();
   setView('reader');
   if (settings.showTranslation) setTimeout(() => applyCachedTranslations(), 60);
@@ -273,21 +278,35 @@ function measurePages() {
   if (!body) return;
   const total = body.scrollWidth;
   PG.total = Math.max(1, Math.round((total + COL_GAP) / Math.max(1, PG.step)));
-  // 章节标题的横向位置，用来做页眉副标题
+  // 章节标题与每个段落的横向位置（页眉副标题、进度百分比都要用）
   const bodyRect = body.getBoundingClientRect();
   PG.headings = [];
+  PG.blockX = [];
   for (const el of $$('#reader-body [data-bi]')) {
-    if (el.tagName !== 'H2') continue;
-    PG.headings.push({
-      x: el.getBoundingClientRect().left - bodyRect.left,
-      text: (el.textContent || '').trim(),
-    });
+    const x = el.getBoundingClientRect().left - bodyRect.left;
+    const bi = +el.dataset.bi;
+    PG.blockX[bi] = x;
+    if (el.tagName === 'H2') PG.headings.push({ x, text: (el.textContent || '').trim(), bi });
   }
 }
 
 function updatePageChrome() {
   const pgEl = $('#reader-page');
-  if (pgEl) pgEl.textContent = `${PG.page + 1} / ${PG.total}`;
+  if (pgEl) {
+    let pct = 0;
+    if (S.cur && PG.blockX && PG.blockX.length) {
+      const cut = PG.page * PG.step + 4;
+      let bi = 0;
+      for (let i = 0; i < PG.blockX.length; i++) {
+        if (PG.blockX[i] === undefined) continue;
+        if (PG.blockX[i] <= cut) bi = i; else break;
+      }
+      const before = (PG.blockWords && PG.blockWords[bi]) || 0;
+      const total = S.cur.parsed.words || 1;
+      pct = Math.max(0, Math.min(100, Math.round(before / total * 100)));
+    }
+    pgEl.textContent = `${PG.page + 1} / ${PG.total} · ${pct}%`;
+  }
   $$('[data-action="page-prev"]').forEach(b => b.toggleAttribute('disabled', PG.page <= 0));
   $$('[data-action="page-next"]').forEach(b => b.toggleAttribute('disabled', PG.page >= PG.total - 1));
   const sub = $('#reader-sub');
@@ -360,6 +379,8 @@ let readerObserver = null;
 /** 把一个段落的纯文本换成可点词的 span（幂等） */
 function tokenizeBlock(el, block) {
   if (!el || el.dataset.rendered === '1') return;
+  const keepTr = el.querySelector(':scope > .tr-block');   // 已插入的译文先拿出来
+  if (keepTr) keepTr.remove();
   const frag = document.createDocumentFragment();
   for (const sent of block.sentences) {
     const sEl = document.createElement('span');
@@ -367,11 +388,18 @@ function tokenizeBlock(el, block) {
     sEl.dataset.sid = sent.sid;
     for (const t of tokensOf(sent)) {
       if (t.k === 'w') {
-        const wEl = document.createElement('span');
-        wEl.className = 'w' + (S.vocab.has(t.w) ? ' saved' : '');
+        const anno = annoTextFor(t.w);
+        const wEl = document.createElement(anno ? 'ruby' : 'span');
+        wEl.className = 'w' + (anno ? ' has-anno' : '')
+          + ((S.vocab.has(t.w) || S.vocab.has(dict.resolveBase(t.w))) ? ' saved' : '');
         wEl.dataset.w = t.w;
         wEl.dataset.sid = sent.sid;
         wEl.textContent = t.v;
+        if (anno) {
+          const rt = document.createElement('rt');
+          rt.textContent = anno;
+          wEl.appendChild(rt);
+        }
         sEl.appendChild(wEl);
       } else {
         sEl.appendChild(document.createTextNode(t.v));
@@ -382,6 +410,7 @@ function tokenizeBlock(el, block) {
   }
   el.textContent = '';
   el.appendChild(frag);
+  if (keepTr) el.appendChild(keepTr);                      // 再放回去
   el.dataset.rendered = '1';
 }
 
@@ -409,6 +438,13 @@ function renderReader() {
   const body = $('#reader-body');
   const frag = document.createDocumentFragment();
   const els = [];
+  // 每段之前累计了多少词 —— 用来算「按字数的阅读百分比」
+  PG.blockWords = [];
+  let wAcc = 0;
+  parsed.blocks.forEach((b, bi) => {
+    PG.blockWords[bi] = wAcc;
+    wAcc += b.sentences.reduce((n, x) => n + countWords(x.text), 0);
+  });
   // 句子 → 段落 的映射，供朗读定位 / 强制展开使用
   const sidBlock = new Array(parsed.sentences.length).fill(-1);
 
@@ -427,7 +463,7 @@ function renderReader() {
   body.appendChild(frag);
   S.cur.sidBlock = sidBlock;
 
-  if (parsed.words > LAZY_WORD_LIMIT && typeof IntersectionObserver !== 'undefined') {
+  if (parsed.words > LAZY_WORD_LIMIT && typeof IntersectionObserver !== 'undefined' && !needEagerRender(parsed)) {
     // 第二遍：滚到附近才把段落变成可点词，避免一口气造几十万个 DOM 节点
     readerObserver = new IntersectionObserver(entries => {
       for (const en of entries) {
@@ -470,6 +506,144 @@ function renderReader() {
   // 注意：分页要等视图真正显示后再算宽度，见 openArticle
 }
 
+/* ══════════════════════════  分级注释（按考纲级别在文中标注）  ══════════════════════════ */
+
+const TAG_RANK = { cet4: 3, cet6: 4, ky: 5, toefl: 6, ielts: 6, gre: 7 };
+const LEVEL_NAME = { cet4: '四级以上', cet6: '六级以上', ky: '考研以上', toefl: '托福/雅思以上', gre: 'GRE' };
+const annoMemo = new Map();
+let annoRetry = false;
+
+/** 单个词条的难度。
+ *  关键：托福/雅思词表里连 can、in、day 都有，所以绝不能取「标签里最高的等级」，
+ *  而应取「最容易的那个标签」——中考/高考词一律算最简单的。 */
+function levelOfRec(rec) {
+  const t = rec.tags || [];
+  const has = k => t.indexOf(k) >= 0;
+  const frq = rec.frq || 0;
+  if (has('zk') || has('gk')) return 1;        // 中考 / 高考词：一定认识
+  if (rec.oxford === 1) return 2;              // 牛津核心词
+  if (frq && frq <= 2500) return 2;            // 超高频
+  if (has('cet4')) return 3;
+  if (rec.collins >= 4) return 3;
+  if (has('cet6')) return 4;
+  if (has('ky')) return 5;
+  if (has('toefl') || has('ielts')) return 6;
+  if (has('gre')) return 7;
+  if (frq && frq <= 10000) return 4;
+  if (frq && frq <= 20000) return 5;
+  return 6;
+}
+
+/** 词的难度：本身和它的原形里，取更简单的那个。
+ *  is→be、words→word、easier→easy 都会因此降到基础级。 */
+function wordLevelOf(word) {
+  const rec = dict.lookup(word);
+  if (!rec) return 0;
+  let lv = levelOfRec(rec);
+  const baseW = rec.exact ? rec.lemma : rec.matched;
+  if (baseW && baseW !== word) {
+    const b = dict.lookup(baseW);
+    if (b) lv = Math.min(lv, levelOfRec(b));
+  }
+  return lv;
+}
+
+/** 取一个又短又常见的释义：跳过 [计] [化] 这类专业义项 */
+function shortGloss(rec) {
+  if (!rec || !rec.translation) return '';
+  const parts = String(rec.translation).split(/[；;\n]/).map(x => x.trim()).filter(Boolean);
+  for (const p of parts) {
+    if (/\[[^\]]{1,5}\]/.test(p)) continue;              // 带 [计] [医] 标记的多半是冷门义项
+    const clean = p.replace(/^[a-z]{1,6}\.\s*/i, '').replace(/\[[^\]]*\]/g, '').trim();
+    if (!clean) continue;
+    const first = clean.split(/[，,、]/)[0].trim();
+    if (!first) continue;
+    return first.length > 6 ? first.slice(0, 6) : first;
+  }
+  // 全都被过滤掉了就退回原文
+  const t = String(rec.translation).replace(/^[a-z]{1,5}\.\s*/i, '').replace(/\[[^\]]*\]/g, '');
+  const first = t.split(/[；;，,、]/)[0].trim();
+  return first.length > 6 ? first.slice(0, 6) : first;
+}
+
+/** 这个词要不要加注释；要的话返回 rt 里显示的文本 */
+function annoTextFor(word) {
+  if (!settings.annotate || settings.annotate === 'off') return '';
+  const need = TAG_RANK[settings.annotate] || 0;
+  if (!need) return '';
+  // 词典还没加载完时必须直接返回，而且**不能写进缓存** ——
+  // 否则空结果会被永久缓存，注释功能看起来「完全没反应」。
+  if (!dict.ready()) {
+    if (!annoRetry) {
+      annoRetry = true;
+      dict.load()
+        .then(() => { annoRetry = false; annoMemo.clear(); rerenderReader(); })
+        .catch(() => { annoRetry = false; });
+    }
+    return '';
+  }
+
+  const key = word + '|' + settings.annotate + '|' + (settings.annotatePhonetic ? 1 : 0);
+  const hit = annoMemo.get(key);
+  if (hit !== undefined) return hit;
+
+  let out = '';
+  try {
+    if (wordLevelOf(word) >= need) {
+      const rec = dict.lookup(word);
+      const g = shortGloss(rec);
+      if (g) out = settings.annotatePhonetic && rec && rec.phonetic ? `${rec.phonetic} ${g}` : g;
+    }
+  } catch {}
+  if (annoMemo.size > 30000) annoMemo.clear();
+  annoMemo.set(key, out);
+  return out;
+}
+
+/** 打开注释时要把所有段落都渲染出来，否则分页高度量不准 */
+function needEagerRender(parsed) {
+  return (settings.annotate && settings.annotate !== 'off') && parsed.words <= 15000;
+}
+
+/* ══════════════════════════  章节目录  ══════════════════════════ */
+
+function goToBlock(bi, smooth = true) {
+  if (!S.cur) return;
+  const el = forceRenderBlock(bi) || $(`#reader-body [data-bi="${bi}"]`);
+  if (!el) return;
+  if (isPaged()) {
+    const body = $('#reader-body');
+    const x = el.getBoundingClientRect().left - body.getBoundingClientRect().left;
+    goPage(Math.floor((x + 4) / Math.max(1, PG.step)), smooth);
+  } else {
+    el.scrollIntoView({ block: 'start', behavior: smooth ? 'smooth' : 'auto' });
+  }
+}
+
+function showToc() {
+  if (!S.cur) return;
+  const { parsed } = S.cur;
+  const items = [];
+  parsed.blocks.forEach((b, bi) => {
+    if (b.type === 'h') items.push({ bi, text: b.sentences.map(x => x.text).join(' ') });
+  });
+  // 没有明显标题时，退而把每 12 段当一节，至少能快速跳转
+  const fallback = items.length === 0;
+  if (fallback) {
+    for (let bi = 0; bi < parsed.blocks.length; bi += 12) {
+      const head = parsed.blocks[bi].sentences[0];
+      if (head) items.push({ bi, text: head.text.slice(0, 42) + (head.text.length > 42 ? '…' : '') });
+    }
+  }
+  openModal(`<h3>目录</h3>
+    <div class="sub">${fallback ? '这篇没有明显的章节标题，按段落位置生成' : `共 ${items.length} 个章节`} · 点一下跳过去</div>
+    <div class="toc-list">
+      ${items.map(x => `<button class="toc-item" data-action="toc-go" data-bi="${x.bi}">
+        <span class="toc-idx">${fallback ? '·' : ''}</span>${esc(x.text)}</button>`).join('')}
+    </div>
+    <div class="modal-foot"><button class="btn" data-action="modal-close">关闭</button></div>`);
+}
+
 /* ══════════════════════════  段落翻译 / 中文对照  ══════════════════════════ */
 
 const trKey = (articleId, bi) => `tr:${articleId}:${bi}`;
@@ -485,11 +659,12 @@ function blockText(bi) {
 function insertTranslation(bi, text) {
   const host = $(`#reader-body [data-bi="${bi}"]`);
   if (!host || !text) return null;
-  let node = host.nextElementSibling;
-  if (!node || !node.classList || !node.classList.contains('tr-block')) {
-    node = document.createElement('div');
+  // 放在段落「内部」：两栏排版时才不会被甩到下一栏，离原文更近
+  let node = host.querySelector(':scope > .tr-block');
+  if (!node) {
+    node = document.createElement('span');
     node.className = 'tr-block';
-    host.after(node);
+    host.appendChild(node);
   }
   node.dataset.trBi = String(bi);
   node.innerHTML = `<span class="tr-tag">译</span>${esc(text)}`;
@@ -601,6 +776,11 @@ function onScroll() {
 /* ── 点词 / 点句 ── */
 function onReaderClick(e) {
   if (isModalOpen()) return;
+  // 点左半边 → 详情放右边；点右半边 → 详情放左边，永远不挡着正在读的地方
+  try {
+    const r = e.target.getBoundingClientRect();
+    S.panelSide = (r.left + r.width / 2) < window.innerWidth / 2 ? 'right' : 'left';
+  } catch { S.panelSide = 'right'; }
   const w = e.target.closest?.('.w');
   if (w) { showWordPanel(w.dataset.w, +w.dataset.sid, w.textContent); return; }
   const s = e.target.closest?.('.sent');
@@ -621,6 +801,11 @@ function ctxFor(sid) {
 /* ══════════════════════════  面板  ══════════════════════════ */
 
 function openPanel() {
+  if (window.innerWidth >= 900) {
+    const left = S.panelSide === 'left';
+    document.body.classList.toggle('panel-left', left);
+    document.body.classList.toggle('panel-right', !left);
+  }
   $('#panel').hidden = false;
   $('#scrim').hidden = false;
   document.body.classList.add('panel-open');
@@ -751,7 +936,7 @@ function showSentencePanel(sid) {
 }
 
 /* ── AI 流式渲染 ── */
-function runAI(el, key, messages) {
+function runAI(el, key, messages, opts = {}) {
   if (!el) return;
   if (S.aiAbort) { try { S.aiAbort.abort(); } catch {} }
   const ac = new AbortController();
@@ -775,7 +960,7 @@ function runAI(el, key, messages) {
     acc = full;
     if (cached) { el.innerHTML = renderRich(acc); el.classList.remove('stream-cursor'); return; }
     if (!raf) raf = requestAnimationFrame(paint);
-  }, { signal: ac.signal })
+  }, { signal: ac.signal, ...opts })
     .then(() => {
       el.classList.remove('stream-cursor');
       if (!acc) el.innerHTML = '<div class="err-box">AI 没有返回内容，请重试。</div>';
@@ -929,6 +1114,16 @@ async function gradeReview(g) {
 
 /* ══════════════════════════  生词操作  ══════════════════════════ */
 
+/** 把文中所有「原形等于 base」的词标上/去掉下划线（包含 running→run 这类变形） */
+function markWordSaved(base, on) {
+  const b = String(base).toLowerCase();
+  $$('#reader-body .w').forEach(el => {
+    const w = el.dataset.w;
+    if (!w) return;
+    if (w === b || dict.resolveBase(w) === b) el.classList.toggle('saved', on);
+  });
+}
+
 async function saveWord(base, rec, surface, sid) {
   const { sentence } = ctxFor(sid);
   const card = srs.newCard(base, {
@@ -942,7 +1137,7 @@ async function saveWord(base, rec, surface, sid) {
   S.vocab.set(base, card);
   try { await db.put('vocab', card); } catch {}
   scheduleSync();
-  $$(`.w[data-w="${CSS.escape(base)}"]`).forEach(el => el.classList.add('saved'));
+  markWordSaved(base, true);
   toast('已加入生词本：' + base);
   return card;
 }
@@ -953,7 +1148,7 @@ async function unsaveWord(base) {
   try {
     await db.put('vocab', { ...old, word: base, deleted: true, updated: touch() });
   } catch {}
-  $$(`.w[data-w="${CSS.escape(base)}"]`).forEach(el => el.classList.remove('saved'));
+  markWordSaved(base, false);
   scheduleSync();
   toast('已从生词本移除：' + base);
 }
@@ -1280,6 +1475,8 @@ function renderSettings() {
   $('#set-para').value = settings.paraStyle || 'web';
   $('#set-justify').checked = settings.justify !== false;
   $('#set-translation').checked = !!settings.showTranslation;
+  $('#set-annotate').value = settings.annotate || 'off';
+  $('#set-anno-phon').checked = !!settings.annotatePhonetic;
   $('#set-autoai').checked = !!settings.autoAI;
   $('#set-rate').value = settings.ttsRate;
   $('#set-rate-v').textContent = (settings.ttsRate / 100).toFixed(2) + '×';
@@ -1302,6 +1499,17 @@ function fillVoices() {
     ? list.map(v => `<option value="${esc(v.voiceURI)}">${esc(v.name)} · ${esc(v.lang)}</option>`).join('')
     : '<option value="">系统默认</option>';
   sel.value = settings.ttsVoice || (list[0]?.voiceURI || '');
+  const hint = $('#voice-hint');
+  if (hint) {
+    const premium = tts.hasPremiumVoice();
+    hint.innerHTML = premium
+      ? `当前会用：<b>${esc(tts.currentVoiceName())}</b>（系统里有高质量音色，已自动优先选用）`
+      : `当前只有基础音色（会用 <b>${esc(tts.currentVoiceName())}</b>）。`
+        + `想要更自然的发音，去系统里下载一个高质量语音：<br>`
+        + `<b>Mac</b>：系统设置 → 辅助功能 → 朗读内容 → 系统声音 → 管理声音 → 英文，挑带「(增强)」或「(高级)」的下载<br>`
+        + `<b>iPhone / iPad</b>：设置 → 辅助功能 → 朗读内容 → 声音 → 英语，下载「Siri 语音」或带「增强」的<br>`
+        + `下载后回到这里，音色列表里就会出现，选中即可。`;
+  }
 }
 
 /* ══════════════════════════  导入 / 导出  ══════════════════════════ */
@@ -1552,16 +1760,25 @@ const ACTIONS = {
   },
   'back-top': () => window.scrollTo({ top: 0, behavior: 'smooth' }),
   'toggle-translation': async (btn) => {
-    settings.showTranslation = !settings.showTranslation;
-    saveSettings();
-    if (btn) btn.classList.toggle('is-on', settings.showTranslation);
-    if (settings.showTranslation) {
+    try {
+      settings.showTranslation = !settings.showTranslation;
+      saveSettings();
+      if (btn) btn.classList.toggle('is-on', settings.showTranslation);
+      if (!settings.showTranslation) { removeTranslations(); toast('已隐藏译文'); return; }
+
       const missing = await applyCachedTranslations();
-      if (missing > 0) translateArticle();
-      else toast('译文已显示（全部来自缓存）');
-    } else {
-      removeTranslations();
-      toast('已隐藏译文');
+      if (missing > 0) {
+        if (!ai.hasKey()) {
+          toast('要翻译需要先填 API Key：设置 → AI 引擎', 5500);
+          setView('settings');
+          return;
+        }
+        translateArticle();
+      } else {
+        toast('译文已显示（全部来自缓存，没花钱）');
+      }
+    } catch (e) {
+      toast('打开译文失败：' + (e.message || e), 5000);
     }
   },
   'translate-block': async (btn) => {
@@ -1599,6 +1816,33 @@ const ACTIONS = {
   'page-prev': () => goPage(PG.page - 1),
   'page-next': () => goPage(PG.page + 1),
   'toggle-tools': () => document.body.classList.toggle('tools-open'),
+  'toc': () => showToc(),
+  'copy-guide': () => {
+    const t = ($('#guide-out') || {}).textContent || '';
+    if (!t.trim()) { toast('还没有内容'); return; }
+    copyText(t).then(ok => toast(ok ? '已复制' : '复制失败，请手动选中'));
+  },
+  'toc-go': (btn) => { const bi = +btn.dataset.bi; closeModal(); setTimeout(() => goToBlock(bi), 80); },
+  'toggle-fullscreen': async (btn) => {
+    try {
+      if (!document.fullscreenElement) {
+        const el = document.documentElement;
+        const req = el.requestFullscreen || el.webkitRequestFullscreen;
+        if (!req) throw new Error('这个浏览器不支持网页全屏');
+        await req.call(el);
+        btn.classList.add('is-on');
+      } else {
+        const exit = document.exitFullscreen || document.webkitExitFullscreen;
+        if (exit) await exit.call(document);
+        btn.classList.remove('is-on');
+      }
+    } catch (e) {
+      // iPhone 的 Safari 不给网页全屏 —— 退而用专注模式，效果接近
+      document.body.classList.toggle('focus-mode');
+      btn.classList.toggle('is-on', document.body.classList.contains('focus-mode'));
+      toast('这个浏览器不支持网页全屏，已切换为「专注模式」（隐藏工具栏）', 4200);
+    }
+  },
   'toggle-focus': (btn) => {
     document.body.classList.toggle('focus-mode');
     btn.classList.toggle('is-on', document.body.classList.contains('focus-mode'));
@@ -1607,7 +1851,7 @@ const ACTIONS = {
   'tts-play': () => startReading(),
   'tts-stop': () => { tts.stop(); toast('已停止朗读'); },
   'speak-sent': (btn) => { const sid = +btn.dataset.sid; const t = ctxFor(sid).sentence; tts.say(t, settings.ttsRate / 100); },
-  'speak-card': () => { if (S.review.cur) tts.say(S.review.cur.word, settings.ttsRate / 100); },
+  'speak-card': () => { if (S.review.cur) tts.say(S.review.cur.word, settings.ttsRate / 100, { slow: true }); },
   'copy-word': () => { navigator.clipboard?.writeText(S.panel?.surface || ''); toast('已复制'); },
   'copy-sent': () => { navigator.clipboard?.writeText(S.panel?.sentence || ''); toast('已复制'); },
   'to-sentence': (btn) => showSentencePanel(+btn.dataset.sid),
@@ -1640,13 +1884,16 @@ const ACTIONS = {
   'article-guide': async () => {
     const { article, parsed } = S.cur || {};
     if (!article) return;
-    openModal(`<h3>AI 导读</h3>
-      <div class="sub">${esc(parsed.title)}</div>
+    openModal(`<h3>要点总结 · 导读</h3>
+      <div class="sub">${esc(parsed.title)} · 中英双语要点</div>
       <div id="guide-out" class="ai-out"></div>
-      <div class="modal-foot"><button class="btn" data-action="modal-close">关闭</button></div>`);
+      <div class="modal-foot">
+        <button class="btn" data-action="copy-guide">复制</button>
+        <button class="btn" data-action="modal-close">关闭</button>
+      </div>`);
     runAI($('#guide-out'), ai.cacheKeyFor('a', [article.id]), ai.articlePrompt({
       title: parsed.title, text: parsed.sentences.map(s => s.text).join(' '),
-    }));
+    }), { maxTokens: 1500 });
   },
   'sync-save-cfg': () => {
     const url = $('#sy-url').value.trim();
@@ -1807,7 +2054,7 @@ function wire() {
   $('#ph-speak').addEventListener('click', () => {
     const p = S.panel;
     if (p?.type === 'sentence') tts.say(p.sentence, settings.ttsRate / 100);
-    else if (p?.surface) tts.say(p.surface, settings.ttsRate / 100);
+    else if (p?.surface) tts.say(p.surface, settings.ttsRate / 100, { slow: true });
   });
 
   // 翻页模式下左右滑动
@@ -1957,6 +2204,14 @@ function wire() {
   });
   $('#set-para').addEventListener('change', e => { settings.paraStyle = e.target.value; saveSettings(); });
   $('#set-justify').addEventListener('change', e => { settings.justify = e.target.checked; saveSettings(); });
+  $('#set-annotate').addEventListener('change', e => {
+    settings.annotate = e.target.value; saveSettings(); annoMemo.clear();
+    rerenderReader();
+  });
+  $('#set-anno-phon').addEventListener('change', e => {
+    settings.annotatePhonetic = e.target.checked; saveSettings(); annoMemo.clear();
+    rerenderReader();
+  });
   $('#set-translation').addEventListener('change', e => {
     settings.showTranslation = e.target.checked; saveSettings();
     const tb = $('[data-action="toggle-translation"]');
@@ -2076,6 +2331,20 @@ function openVocabWord(word) {
 }
 
 /* ══════════════════════════  启动  ══════════════════════════ */
+
+/** 需要重绘正文时统一走这里（改注释级别、换字体等） */
+function rerenderReader() {
+  if (!S.cur) return;
+  renderReader();
+  if (S.view === 'reader') {
+    if (isPaged()) requestAnimationFrame(() => relayoutPages(false));
+    else {
+      const h = document.documentElement.scrollHeight - window.innerHeight;
+      if (h > 0) window.scrollTo({ top: (S.cur.article.progress || 0) * h });
+    }
+  }
+  if (settings.showTranslation) applyCachedTranslations();
+}
 
 /** 打开文章里第一次出现的某个词（配合 ?word= 深链接） */
 function focusWord(word) {
