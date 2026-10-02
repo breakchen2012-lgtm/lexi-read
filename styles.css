@@ -274,14 +274,16 @@ body.focus-mode #topbar, body.focus-mode #tabbar{ transition: opacity .3s; }
 .seg-btn.is-on{ background: var(--bg-elev); color: var(--fg); box-shadow: 0 1px 4px rgba(0,0,0,.10); }
 
 /* ── 分级注释（ruby 行间注） ── */
-.reader-body ruby.w{ ruby-align: center; ruby-position: over; }
+.reader-body ruby.w{ ruby-align: center; ruby-position: over; hyphens: none; }
 .reader-body ruby.w rt{
   font-family: var(--ff-sans); font-size: 9.5px; line-height: 1.15;
-  color: color-mix(in srgb, var(--accent) 80%, var(--fg-dim));
-  font-weight: 500; letter-spacing: -.2px; user-select: none;
-  padding-bottom: 2px;
+  color: color-mix(in srgb, var(--accent) 85%, var(--fg-dim));
+  font-weight: 500; letter-spacing: 0; user-select: none;
+  white-space: nowrap; hyphens: none; text-indent: 0;
+  /* 加一层淡淡的底色，让「这个释义属于哪个词」一眼可辨 */
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 3px; padding: 0 3px 1px;
 }
-html[data-justify="1"] .reader-body ruby.w rt{ hyphens: none; }
 /* 有注释的行之间要多留一点空间，否则上标会挤在一起 */
 .reader-body p:has(ruby.w){ line-height: calc(var(--lh) + .35); }
 

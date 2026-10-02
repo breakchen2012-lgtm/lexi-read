@@ -375,19 +375,19 @@ try {
   const keys = await W().caches.keys();
   let shell = {};
   try {
-    const c = await W().caches.open('lexiread-v21');
+    const c = await W().caches.open('lexiread-v24');
     for (const u of ['./index.html', './src/app.js', './styles.css', './icons/icon-192.png']) {
       shell[u] = !!(await c.match(u));
     }
   } catch (e) { shell = { err: e.message }; }
-  const ok = ctrl && keys.includes('lexiread-v21') && Object.values(shell).every(Boolean);
+  const ok = ctrl && keys.includes('lexiread-v24') && Object.values(shell).every(Boolean);
   rec(ok, 'Service Worker 接管并缓存应用外壳（离线可用）',
     JSON.stringify({ ctrl, keys, shell }).slice(0, 160));
 } catch (e) { rec(false, 'Service Worker 接管并缓存应用外壳（离线可用）', e.message); }
 
 /* 22 ── 词典已缓存，可离线查词 */
 try {
-  const c = await W().caches.open('lexiread-v21');
+  const c = await W().caches.open('lexiread-v24');
   const hit = await c.match(new URL('./data/dict.json', W().location.href).href);
   const size = hit ? (await hit.clone().text()).length : 0;
   rec(!!hit && size > 1000000, '离线词典已进入缓存', JSON.stringify({ size }));
@@ -689,6 +689,29 @@ try {
     '「中 译文」只翻当前这一页，不会把整篇都翻掉',
     JSON.stringify({ 总页数: totalPages, 总段数: paras, 本页实际请求: used }));
 } catch (e) { rec(false, '「中 译文」只翻当前这一页，不会把整篇都翻掉', e.message); }
+
+/* 39 ── 点带注释的词，面板标题不能把中文注释粘进去（曾是 "formidable巨大的"） */
+try {
+  if (!D().querySelector('#panel').hidden) { D().querySelector('#ph-close').click(); await wait(300); }
+  // 确保注释是开的
+  if (!D().querySelector('#reader-body ruby.w')) {
+    D().querySelector('[data-action="toggle-annotate"]').click();
+    await waitFor(() => D().querySelector('#reader-body ruby.w'), 15000, '注释出现');
+  }
+  const ruby = D().querySelector('#reader-body ruby.w');
+  if (!ruby) throw new Error('正文里没有带注释的词');
+  const base = ruby.dataset.w;
+  const gloss = (ruby.querySelector('rt') || {}).textContent || '';
+  ruby.click();
+  await waitFor(() => !D().querySelector('#panel').hidden, 6000, '面板');
+  await wait(400);
+  const title = (D().querySelector('#ph-word').textContent || '').trim();
+  const ctx = (D().querySelector('#ph-sent') || {}).textContent || '';
+  const clean = title === base && gloss && !title.includes(gloss);
+  rec(clean, '点带注释的词，面板标题只显示单词本身、不粘中文',
+    JSON.stringify({ 标题: title, 原词: base, 注释: gloss, 语境里有中文: /[\u4e00-\u9fa5]/.test(ctx) }));
+  D().querySelector('#ph-close').click();
+} catch (e) { rec(false, '点带注释的词，面板标题只显示单词本身、不粘中文', e.message); }
 
 /* 输出 */
 const pass = results.filter(r => r[0]).length;

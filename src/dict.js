@@ -237,6 +237,14 @@ export function resolveBase(word) {
   return base;
 }
 
+/** 暴露规则化的词干候选（buying→buy、studies→study 之类）。
+ *  用于「难度判定」这种需要保守估计的场合：只要有一个候选是简单词，就当简单词。 */
+export function stemCandidates(word) {
+  const w = String(word || '').toLowerCase().replace(/[’]/g, "'");
+  if (!w) return [];
+  try { return variants(w).filter(v => index && index.has(v)); } catch { return []; }
+}
+
 /** 模糊搜索（前缀），用于词典页 */
 export function suggest(prefix, limit = 12) {
   if (!index) return [];

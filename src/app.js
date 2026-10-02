@@ -536,8 +536,10 @@ function levelOfRec(rec) {
   if (has('ky')) return 5;
   if (has('toefl') || has('ielts')) return 6;
   if (has('gre')) return 7;
-  if (frq && frq <= 10000) return 4;
-  if (frq && frq <= 20000) return 5;
+  // 没有考纲标签时按词频估：词频 5000 以内的词，六级学习者基本都认识
+  if (frq && frq <= 8000) return 3;
+  if (frq && frq <= 15000) return 4;
+  if (frq && frq <= 25000) return 5;
   return 6;
 }
 
@@ -547,9 +549,18 @@ function wordLevelOf(word) {
   const rec = dict.lookup(word);
   if (!rec) return 0;
   let lv = levelOfRec(rec);
+
+  // 把所有可能的原形都算一遍，取最简单的那一个。
+  // 关键：buying / showered / intimidating 这类词的词典条目里没有「（buy 的现在分词）」
+  // 这种提示，只靠 lemma 还原不到原形，会被误判成难词标上注释。
+  const cands = new Set();
   const baseW = rec.exact ? rec.lemma : rec.matched;
-  if (baseW && baseW !== word) {
-    const b = dict.lookup(baseW);
+  if (baseW) cands.add(baseW);
+  for (const c of dict.stemCandidates(word)) cands.add(c);
+
+  for (const c of cands) {
+    if (!c || c === word) continue;
+    const b = dict.lookup(c);
     if (b) lv = Math.min(lv, levelOfRec(b));
   }
   return lv;
@@ -565,13 +576,16 @@ function shortGloss(rec) {
     if (!clean) continue;
     const first = clean.split(/[，,、]/)[0].trim();
     if (!first) continue;
-    return first.length > 6 ? first.slice(0, 6) : first;
+    return first.length > 4 ? first.slice(0, 4) : first;
   }
   // 全都被过滤掉了就退回原文
   const t = String(rec.translation).replace(/^[a-z]{1,5}\.\s*/i, '').replace(/\[[^\]]*\]/g, '');
   const first = t.split(/[；;，,、]/)[0].trim();
-  return first.length > 6 ? first.slice(0, 6) : first;
+  return first.length > 4 ? first.slice(0, 4) : first;
 }
+
+/* 人名、地名、机构名之类：标了也没用，还特别吵 */
+const PROPER_NOISE = /(姓氏|人名|男子名|女子名|男子名|地名|城市|国家|州名|河名|山名|岛名|公司|商标|缩写|略语|即|原名|同|见)/;
 
 /** 这个词要不要加注释；要的话返回 rt 里显示的文本 */
 function annoTextFor(word) {
@@ -596,10 +610,16 @@ function annoTextFor(word) {
 
   let out = '';
   try {
-    if (wordLevelOf(word) >= need) {
-      const rec = dict.lookup(word);
-      const g = shortGloss(rec);
-      if (g) out = settings.annotatePhonetic && rec && rec.phonetic ? `${rec.phonetic} ${g}` : g;
+    const rec = dict.lookup(word);
+    if (rec && wordLevelOf(word) >= need) {
+      const raw = String(rec.translation || '');
+      const tags = rec.tags || [];
+      const plain = tags.length === 0 && (!rec.frq || rec.frq === 0) && (rec.collins || 0) === 0;
+      // 专有名词、以及毫无考纲/词频信息又带括号解释的条目，一律不标
+      if (!PROPER_NOISE.test(raw.split('；')[0]) && !plain) {
+        const g = shortGloss(rec);
+        if (g) out = settings.annotatePhonetic && rec.phonetic ? `${rec.phonetic} ${g}` : g;
+      }
     }
   } catch {}
   if (annoMemo.size > 30000) annoMemo.clear();
@@ -855,6 +875,19 @@ function onScroll() {
 }
 
 /* ── 点词 / 点句 ── */
+/** 取词元素上的纯单词文本。带注释的词是 <ruby>词<rt>释义</rt></ruby>，
+ *  直接读 textContent 会把释义一起读进去（面板标题变成「formidable巨大的」）。 */
+function surfaceOf(el) {
+  if (!el) return '';
+  if (el.dataset && el.dataset.w) return el.dataset.w;
+  let out = '';
+  for (const n of el.childNodes) {
+    if (n.nodeType === 3) out += n.nodeValue;
+    else if (n.nodeName !== 'RT') out += n.textContent || '';
+  }
+  return out.trim();
+}
+
 function onReaderClick(e) {
   if (isModalOpen()) return;
   // 点左半边 → 详情放右边；点右半边 → 详情放左边，永远不挡着正在读的地方
@@ -863,7 +896,7 @@ function onReaderClick(e) {
     S.panelSide = (r.left + r.width / 2) < window.innerWidth / 2 ? 'right' : 'left';
   } catch { S.panelSide = 'right'; }
   const w = e.target.closest?.('.w');
-  if (w) { showWordPanel(w.dataset.w, +w.dataset.sid, w.textContent); return; }
+  if (w) { showWordPanel(w.dataset.w, +w.dataset.sid, surfaceOf(w)); return; }
   const s = e.target.closest?.('.sent');
   if (s) { showSentencePanel(+s.dataset.sid); }
 }
@@ -2512,7 +2545,7 @@ function focusWord(word) {
   const el = forceRenderBlock(S.cur.sidBlock ? S.cur.sidBlock[hit.sid] : null);
   if (el) el.scrollIntoView({ block: 'center' });
   const target = el && el.querySelector(`.w[data-sid="${hit.sid}"][data-w="${CSS.escape(w)}"]`);
-  showWordPanel(String(word), hit.sid, target ? target.textContent : word);
+  showWordPanel(String(word), hit.sid, target ? surfaceOf(target) : word);
 }
 
 /** 支持 ?article=<id> / ?word=<word> / ?tab=vocab / ?tab=settings / ?review=1 深链接（PWA 快捷方式也用它） */
