@@ -26,6 +26,7 @@ const DEFAULT_SETTINGS = {
   showTranslation: false, // 中文对照
   annotate: 'off',        // 分级注释：off / cet4 / cet6 / ky / toefl / gre
   annotatePhonetic: false,// 注释里是否带音标
+  syncAiKey: false,       // 是否把 AI 配置（含 API Key）同步到其它设备
 };
 let settings = (() => {
   try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SET_KEY) || '{}') }; }
@@ -701,14 +702,35 @@ async function ensureTranslation(bi) {
   return tr;
 }
 
-/** 整篇翻译：并发 3 路，边翻边显示，带进度 */
+/** 翻译顺序：先把「当前这一页」的段落翻出来，再按离得远近依次翻。
+ *  这样点开「中 译文」几秒钟就能看到眼前的中文，而不是等整篇。 */
+function orderedTranslationTargets(parsed) {
+  const all = [];
+  parsed.blocks.forEach((b, bi) => { if (b.type !== 'h') all.push(bi); });
+  if (!isPaged() || !PG.blockX || !PG.blockX.length) return all;
+  const start = PG.page * PG.step;
+  const onPage = [], rest = [];
+  for (const bi of all) {
+    const x = PG.blockX[bi];
+    if (x === undefined) { rest.push(bi); continue; }
+    if (x >= start - 1 && x < start + PG.step) onPage.push(bi);
+    else rest.push(bi);
+  }
+  rest.sort((a, b) => {
+    const da = Math.abs((PG.blockX[a] === undefined ? 1e9 : PG.blockX[a]) - start);
+    const db = Math.abs((PG.blockX[b] === undefined ? 1e9 : PG.blockX[b]) - start);
+    return da - db;
+  });
+  return onPage.concat(rest);
+}
+
+/** 整篇翻译：并发 3 路，当前页优先，边翻边显示，带进度 */
 async function translateArticle(force = false) {
   if (!S.cur || trRunning) return;
   if (!ai.hasKey()) { toast('需要先在「设置 → AI 引擎」填 API Key', 4000); return; }
   const { article, parsed } = S.cur;
 
-  const targets = [];
-  parsed.blocks.forEach((b, bi) => { if (b.type !== 'h') targets.push(bi); });
+  const targets = orderedTranslationTargets(parsed);
   if (!targets.length) { toast('这篇文章没有可翻译的正文'); return; }
 
   if (parsed.words > 8000 && !force) {
@@ -720,7 +742,7 @@ async function translateArticle(force = false) {
   trRunning = true;
   const bar = $('#tr-progress');
   const show = t => { if (bar) { bar.hidden = false; bar.textContent = t; } };
-  show(`准备翻译 ${targets.length} 段…`);
+  show(`正在翻译（本页优先）· 共 ${targets.length} 段…`);
 
   let done = 0, cached = 0, failed = 0;
   const queue = [...targets];
@@ -737,7 +759,7 @@ async function translateArticle(force = false) {
         if (failed === 1) toast('翻译出错：' + e.message, 5000);
       }
       done++;
-      show(`翻译中 ${done}/${targets.length} 段…（${cached} 段来自缓存）`);
+      show(`翻译中 ${done}/${targets.length} 段 · ${cached} 段来自缓存（不花钱）`);
     }
   };
   try {
@@ -878,7 +900,15 @@ async function showWordPanel(surface, sid, surfaceText) {
       <div id="ai-word" class="ai-out"></div>
     </div>`;
 
-  $('#panel-body').innerHTML = dictBlock + sentBlock + aiBlock;
+  const trBlock = sentence ? `
+    <div class="def-block" id="ph-trans-wrap" hidden>
+      <div class="def-label">本段译文
+        <button class="btn tiny" data-action="translate-block" data-sid="${sid}">重新翻译</button>
+      </div>
+      <div id="ph-trans" class="ai-out"></div>
+    </div>` : '';
+
+  $('#panel-body').innerHTML = dictBlock + sentBlock + aiBlock + trBlock;
 
   $('#panel-foot').innerHTML = saved
     ? `<button class="btn" data-action="unsave">✓ 已在生词本 · 移除</button>
@@ -968,10 +998,12 @@ function runAI(el, key, messages, opts = {}) {
     .catch(err => {
       if (err && err.name === 'AbortError') return;
       el.classList.remove('stream-cursor');
+      const needsKey = !ai.hasKey() || /API Key|apiKey|还没有填|接口地址/i.test(err.message || '');
       el.innerHTML = `<div class="err-box">${esc(err.message || err)}</div>
         <div class="row-actions" style="margin-top:10px">
           <button class="btn" data-action="retry-ai">重试</button>
-          <button class="btn" data-action="go-settings">去设置</button>
+          ${needsKey ? '<button class="btn primary" data-action="go-ai">去设置 AI 引擎 →</button>'
+                     : '<button class="btn" data-action="go-settings">去设置</button>'}
         </div>`;
     });
 }
@@ -1477,6 +1509,7 @@ function renderSettings() {
   $('#set-translation').checked = !!settings.showTranslation;
   $('#set-annotate').value = settings.annotate || 'off';
   $('#set-anno-phon').checked = !!settings.annotatePhonetic;
+  $('#set-sync-ai').checked = !!settings.syncAiKey;
   $('#set-autoai').checked = !!settings.autoAI;
   $('#set-rate').value = settings.ttsRate;
   $('#set-rate-v').textContent = (settings.ttsRate / 100).toFixed(2) + '×';
@@ -1789,8 +1822,12 @@ const ACTIONS = {
     btn.disabled = true;
     const old = btn.textContent;
     btn.textContent = '翻译中…';
+    const wrap = $('#ph-trans-wrap'), out = $('#ph-trans');
+    if (wrap) wrap.hidden = false;
+    if (out) out.innerHTML = '<div class="loading"><span class="spinner"></span>正在翻译这一段…</div>';
     try {
-      await ensureTranslation(bi);
+      const tr = await ensureTranslation(bi);
+      if (out) out.textContent = tr || '（这一段没有拿到译文，可以再点一次）';
       settings.showTranslation = true; saveSettings();
       const tb = $('[data-action="toggle-translation"]');
       if (tb) tb.classList.add('is-on');
@@ -1809,13 +1846,33 @@ const ACTIONS = {
         const node = $(`#reader-body .tr-block[data-tr-bi="${bi}"]`);
         if (node) node.scrollIntoView({ block: 'center', behavior: 'smooth' });
       }
-    } catch (e) { toast('翻译失败：' + e.message, 4500); }
+    } catch (e) {
+      if (out) out.textContent = '翻译失败：' + (e.message || e);
+      toast('翻译失败：' + (e.message || e), 4500);
+    }
     btn.disabled = false;
     btn.textContent = old;
   },
   'page-prev': () => goPage(PG.page - 1),
   'page-next': () => goPage(PG.page + 1),
   'toggle-tools': () => document.body.classList.toggle('tools-open'),
+  'go-ai': () => { closeModal(); setView('settings'); setTimeout(() => { const el = $('#set-base'); if (el) el.scrollIntoView({ block: 'center' }); }, 200); },
+  'regen-guide': () => {
+    if (!S.cur) return;
+    const { article, parsed } = S.cur;
+    db.del('aica', ai.cacheKeyFor('a', [article.id])).then(() => {
+      openModal(`<h3>要点总结 · 导读</h3>
+        <div class="sub">${esc(parsed.title)} · 中英双语要点</div>
+        <div id="guide-out" class="ai-out"></div>
+        <div class="modal-foot">
+          <button class="btn" data-action="copy-guide">复制</button>
+          <button class="btn" data-action="modal-close">关闭</button>
+        </div>`);
+      runAI($('#guide-out'), ai.cacheKeyFor('a', [article.id]), ai.articlePrompt({
+        title: parsed.title, text: parsed.sentences.map(s => s.text).join(' '),
+      }), { maxTokens: 1500, noCache: true });
+    });
+  },
   'toc': () => showToc(),
   'copy-guide': () => {
     const t = ($('#guide-out') || {}).textContent || '';
@@ -1889,6 +1946,7 @@ const ACTIONS = {
       <div id="guide-out" class="ai-out"></div>
       <div class="modal-foot">
         <button class="btn" data-action="copy-guide">复制</button>
+        <button class="btn" data-action="regen-guide">重新生成</button>
         <button class="btn" data-action="modal-close">关闭</button>
       </div>`);
     runAI($('#guide-out'), ai.cacheKeyFor('a', [article.id]), ai.articlePrompt({
@@ -1957,6 +2015,13 @@ const ACTIONS = {
       box.hidden = true;
       if (btn) btn.textContent = '查看内容';
     }
+  },
+  'sync-apply-ai': () => {
+    const cur = ai.getConfig();
+    if (!cur.apiKey) { toast('远端还没有可用的 AI 配置'); return; }
+    ai.saveConfig({ baseUrl: cur.baseUrl, model: cur.model, apiKey: cur.apiKey });
+    toast('已应用云端的 AI 配置');
+    renderSync();
   },
   'sync-reload-ui': () => (S.view === 'welcome' ? renderWelcome() : renderSync()),
   'welcome-skip': () => {
@@ -2207,6 +2272,14 @@ function wire() {
   $('#set-annotate').addEventListener('change', e => {
     settings.annotate = e.target.value; saveSettings(); annoMemo.clear();
     rerenderReader();
+  });
+  $('#set-sync-ai').addEventListener('change', e => {
+    settings.syncAiKey = e.target.checked;
+    saveSettings();
+    toast(settings.syncAiKey
+      ? '已开启：AI 配置会随账号同步到你的其它设备（Key 会存在你自己的 Supabase 里）'
+      : '已关闭：AI 配置只留在本机', 4500);
+    renderSync();
   });
   $('#set-anno-phon').addEventListener('change', e => {
     settings.annotatePhonetic = e.target.checked; saveSettings(); annoMemo.clear();

@@ -370,6 +370,9 @@ html[data-mode="page"] #tr-progress{ position: fixed; left:0; right:0;
 /* 面板内容排版 */
 .def-block{ margin-bottom:16px; }
 .def-block:last-child{ margin-bottom:4px; }
+.btn.tiny{ font-size:11.5px; padding:2px 8px; margin-left:6px; vertical-align:1px; }
+#ph-trans-wrap .def-label{ display:flex; align-items:center; justify-content:space-between; }
+#ph-trans{ font-size:14px; line-height:1.8; color: var(--fg); }
 .def-label{ font-size:11px; text-transform:uppercase; letter-spacing:1.1px;
   color: var(--fg-faint); font-weight:650; margin-bottom:6px; }
 .def-zh{ font-size:16px; line-height:1.85; }
@@ -562,8 +565,10 @@ html[data-mode="page"] #tr-progress{ position: fixed; left:0; right:0;
   .panel-grip{ display:none; }
   .panel-head{ padding-top:16px; }
   /* 详情面板放在点击位置的「对面」，不挡着正在读的地方 */
-  body.panel-right #main{ padding-right:420px; padding-left:0; }
-  body.panel-left #main{ padding-left:420px; padding-right:0; }
+  /* 面板是「浮」在正文上面的，绝不能改 #main 的内边距 ——
+     那会触发布局重排、把另一栏挤出屏幕，读者就丢失阅读位置了。 */
+  body.panel-right #main, body.panel-left #main{ padding-left:0; padding-right:0; }
+  #panel{ background: var(--bg); }
   body.panel-left #panel{
     left:0; right:auto; box-shadow: 1px 0 0 var(--line);
     animation: slide-in-left .22s ease;

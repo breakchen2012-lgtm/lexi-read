@@ -519,6 +519,16 @@ export async function sync(opts = {}) {
   if (settingsUpdated && (full || newer(settingsUpdated, lp.settings))) {
     let data = {};
     try { data = JSON.parse(localStorage.getItem('lexiread.settings') || '{}'); } catch {}
+    // 用户明确同意时，才把 AI 配置（含 API Key）一起同步到别的设备
+    if (data.syncAiKey) {
+      try {
+        const aiCfg = JSON.parse(localStorage.getItem('lexiread.ai') || '{}');
+        data = { ...data, ai: { baseUrl: aiCfg.baseUrl || '', model: aiCfg.model || '', apiKey: aiCfg.apiKey || '' } };
+      } catch {}
+    } else if (data.ai) {
+      data = { ...data };
+      delete data.ai;
+    }
     await upsert('lexi_settings', [{ user_id: uid, data, updated: settingsUpdated }]);
     stats.pushed++;
     tr('push.settings', settingsUpdated);

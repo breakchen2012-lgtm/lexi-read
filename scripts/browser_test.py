@@ -41,6 +41,17 @@ def sb_session(uid):
         'expires_in': 3600, 'token_type': 'bearer',
         'user': {'id': uid, 'email': u['email']},
     }
+# 按请求内容返回不同内容，这样「语言总结」和「段落翻译」都能被测到
+MOCK_SUMMARY = (
+    '【核心要点】\n· 收入要大于支出\n· 把结余拿去投资\n· 避免负债\n· 时间比金额更重要\n'
+    '【Key Points】\n· Earn more than you spend\n· Invest the surplus\n· Avoid debt\n'
+    '· Time matters more than the amount\n'
+    '【大意】财富自由的关键是控制欲望并把差额持续投资。\n'
+    '【难度】考研 / 雅思 6.5 左右，句式偏长但用词不难。\n'
+    '【亮点】wind up — 最终落到；forfeit — 丧失'
+)
+MOCK_TRANS = '大多数人靠孤立地死记硬背来记单词。'
+
 MOCK_TEXT = (
     '【本句释义】adj. 有韧性的，能快速恢复的\n'
     '【为什么】句中与 able to recover quickly 同义，指城市灾后恢复能力强\n'
@@ -345,8 +356,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
             self.send_header('Cache-Control', 'no-cache')
             self.end_headers()
-            for i in range(0, len(MOCK_TEXT), 4):
-                chunk = json.dumps({'choices': [{'delta': {'content': MOCK_TEXT[i:i + 4]}}]},
+            blob = MOCK_TEXT
+            try:
+                req = json.loads(body)
+                blob_txt = json.dumps(req, ensure_ascii=False)
+                if '核心要点' in blob_txt or 'Key Points' in blob_txt:
+                    blob = MOCK_SUMMARY
+                elif '译文本身' in blob_txt or '专业英中译者' in blob_txt:
+                    blob = MOCK_TRANS
+            except Exception:
+                pass
+            for i in range(0, len(blob), 4):
+                chunk = json.dumps({'choices': [{'delta': {'content': blob[i:i + 4]}}]},
                                    ensure_ascii=False)
                 self.wfile.write(('data: ' + chunk + '\n\n').encode('utf-8'))
                 self.wfile.flush()

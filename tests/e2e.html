@@ -331,7 +331,9 @@ try {
     return /401/.test(t) ? t : null;
   }, 9000, '错误提示');
   const hasRetry = !!D().querySelector('#ai-word [data-action="retry-ai"]');
-  const hasSettings = !!D().querySelector('#ai-word [data-action="go-settings"]');
+  // 报错时可能是「去设置」也可能是更醒目的「去设置 AI 引擎 →」，都算数
+  const hasSettings = !!(D().querySelector('#ai-word [data-action="go-settings"]')
+    || D().querySelector('#ai-word [data-action="go-ai"]'));
   rec(/API Key 不正确/.test(err) && hasRetry && hasSettings,
     'Key 无效时提示原因并给出「重试 / 去设置」', err.slice(0, 60));
 } catch (e) { rec(false, 'Key 无效时提示原因并给出「重试 / 去设置」', e.message); }
@@ -361,19 +363,19 @@ try {
   const keys = await W().caches.keys();
   let shell = {};
   try {
-    const c = await W().caches.open('lexiread-v15');
+    const c = await W().caches.open('lexiread-v16');
     for (const u of ['./index.html', './src/app.js', './styles.css', './icons/icon-192.png']) {
       shell[u] = !!(await c.match(u));
     }
   } catch (e) { shell = { err: e.message }; }
-  const ok = ctrl && keys.includes('lexiread-v15') && Object.values(shell).every(Boolean);
+  const ok = ctrl && keys.includes('lexiread-v16') && Object.values(shell).every(Boolean);
   rec(ok, 'Service Worker 接管并缓存应用外壳（离线可用）',
     JSON.stringify({ ctrl, keys, shell }).slice(0, 160));
 } catch (e) { rec(false, 'Service Worker 接管并缓存应用外壳（离线可用）', e.message); }
 
 /* 22 ── 词典已缓存，可离线查词 */
 try {
-  const c = await W().caches.open('lexiread-v15');
+  const c = await W().caches.open('lexiread-v16');
   const hit = await c.match(new URL('./data/dict.json', W().location.href).href);
   const size = hit ? (await hit.clone().text()).length : 0;
   rec(!!hit && size > 1000000, '离线词典已进入缓存', JSON.stringify({ size }));
@@ -572,6 +574,52 @@ try {
   const atEnd = txt.trim().startsWith('1 /') ? txt.includes('0%') : true;
   rec(hasPct, '页脚同时显示页码和阅读百分比', txt);
 } catch (e) { rec(false, '页脚同时显示页码和阅读百分比', e.message); }
+
+/* 34 ── 面板是浮层，不能挤压正文（否则两栏会被挤出屏幕） */
+try {
+  if (!D().querySelector('#panel').hidden) { D().querySelector('#ph-close').click(); await wait(500); }
+  const main = D().querySelector('#main');
+  const beforeW = D().querySelector('#reader-body').clientWidth;
+  const beforePages = (D().querySelector('#reader-page') || {}).textContent || '';
+  D().querySelector('#reader-body .w').click();
+  await waitFor(() => !D().querySelector('#panel').hidden, 6000, '面板');
+  await wait(400);
+  const afterW = D().querySelector('#reader-body').clientWidth;
+  const afterPages = (D().querySelector('#reader-page') || {}).textContent || '';
+  const padL = getComputedStyle(main).paddingLeft;
+  const padR = getComputedStyle(main).paddingRight;
+  rec(beforeW === afterW && beforePages === afterPages && padL === '0px' && padR === '0px',
+    '查词面板浮在正文之上，不会挤压排版、不会改变页码',
+    JSON.stringify({ 开面板前: beforeW, 开面板后: afterW, 页码前: beforePages, 页码后: afterPages, padL, padR }));
+} catch (e) { rec(false, '查词面板浮在正文之上，不会挤压排版、不会改变页码', e.message); }
+
+/* 35 ── 「译本段」的结果要当场显示在面板里 */
+try {
+  const btn = D().querySelector('#panel-foot [data-action="translate-block"]');
+  if (!btn) throw new Error('面板里没有「译本段」按钮');
+  btn.click();
+  const txt = await waitFor(() => {
+    const o = D().querySelector('#ph-trans');
+    const t = o && o.textContent.trim();
+    return (t && !/正在翻译/.test(t)) ? t : null;
+  }, 25000, '面板内译文');
+  const inline = D().querySelectorAll('#reader-body .tr-block').length;
+  rec(txt.length > 4 && inline > 0,
+    '「译本段」的译文当场显示在面板里，同时插到正文中',
+    JSON.stringify({ 面板里: txt.slice(0, 24), 正文中: inline }));
+  if (!D().querySelector('#panel').hidden) D().querySelector('#ph-close').click();
+} catch (e) { rec(false, '「译本段」的译文当场显示在面板里，同时插到正文中', e.message); }
+
+/* 36 ── AI 配置可选择性同步 */
+try {
+  D().querySelector('#btn-settings').click();
+  await waitFor(() => D().querySelector('#set-sync-ai'), 6000, '设置页');
+  const box = D().querySelector('#set-sync-ai');
+  rec(box && box.type === 'checkbox' && box.checked === false,
+    '设置里有「把 AI 配置同步到其它设备」开关（默认关闭）');
+  D().querySelector('#tabbar .tab[data-tab="library"]').click();
+  await wait(300);
+} catch (e) { rec(false, '设置里有「把 AI 配置同步到其它设备」开关（默认关闭）', e.message); }
 
 /* 输出 */
 const pass = results.filter(r => r[0]).length;

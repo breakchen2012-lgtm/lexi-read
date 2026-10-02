@@ -81,11 +81,11 @@
       <div class="reader-tools" id="reader-tools">
         <button class="tool" data-action="tts-play">🔊 朗读</button>
         <button class="tool" data-action="tts-stop">⏹ 停止</button>
-        <button class="tool" data-action="toggle-translation">中 译文</button>
-        <button class="tool" data-action="article-guide">✨ 导读</button>
-        <button class="tool" data-action="toc">☰ 目录</button>
-        <button class="tool" data-action="toggle-fullscreen">⛶ 全屏</button>
-        <button class="tool" data-action="toggle-focus">◎ 专注</button>
+        <button class="tool" data-action="toggle-translation" title="每段英文下面显示中文（当前页优先，已翻过的不重复花钱）">中 译文</button>
+        <button class="tool" data-action="article-guide" title="AI 生成中英双语核心要点 + 大意 + 难度 + 亮点">✨ 导读</button>
+        <button class="tool" data-action="toc" title="章节目录，点击跳转">☰ 目录</button>
+        <button class="tool" data-action="toggle-fullscreen" title="全屏（iOS Safari 会退化为专注模式）">⛶ 全屏</button>
+        <button class="tool" data-action="toggle-focus" title="专注模式：隐藏所有工具栏">◎ 专注</button>
         <button class="tool" data-action="reader-settings">Aa 排版</button>
       </div>
     </div>
@@ -227,6 +227,11 @@
       <label class="field"><span>注释里带音标</span>
         <input id="set-anno-phon" type="checkbox">
       </label>
+      <label class="field"><span>把 AI 配置同步到其它设备</span>
+        <input id="set-sync-ai" type="checkbox">
+      </label>
+      <p class="hint">打开后，Base URL / 模型 / API Key 会随账号同步到你的 iPhone、iPad。
+      这些内容存在你自己的 Supabase 里，只有你能读。默认关闭。</p>
       <label class="field"><span>点词后自动请求 AI 讲解</span>
         <input id="set-autoai" type="checkbox">
       </label>

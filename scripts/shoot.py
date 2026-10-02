@@ -124,6 +124,11 @@ SHOTS = [
     dict(name='09-paged-phone', url=f'{BASE}/index.html?article=demo-article', w=402, h=874,
          wait="document.querySelectorAll('#reader-body .w').length>60 && document.querySelector('#reader-page').textContent!=='1 / 1'",
          settle=900, dpr=2, theme='light'),
+    dict(name='14-panel', url=f'{BASE}/index.html?article=demo-article', w=1180, h=800,
+         settle=1400, dpr=2, theme='light',
+         wait="document.querySelectorAll('#reader-body .w').length>100",
+         actions="const w=[...document.querySelectorAll('#reader-body .w')]"
+                 ".find(e=>e.getBoundingClientRect().left>innerWidth/2); w&&w.click();"),
     dict(name='12-annotate', url=f'{BASE}/index.html?article=demo-article',
          w=1024, h=768, settle=1200, dpr=2, theme='light',
          wait="document.querySelectorAll('#reader-body ruby.w').length>3",
