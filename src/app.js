@@ -487,12 +487,22 @@ function renderReader() {
         : { rootMargin: '1500px 0px 1500px 0px' });
     for (const el of els) readerObserver.observe(el);
     requestAnimationFrame(() => {
-      // 首屏 + 附近立刻展开，避免用户还没滚动就点不到词
+      // 首屏 + 附近立刻展开，避免用户还没滚动就点不到词。
+      // 关键：先把要处理的段落一次读完（只有读、没有写），再统一写。
+      // 否则「读 rect → 改 DOM → 再读 rect」会反复强制整篇重排，几万词的书直接卡死。
       const top = window.innerHeight + 1500;
+      const batch = [];
       for (const el of els) {
         if (el.getBoundingClientRect().top > top) break;
-        forceRenderBlock(+el.dataset.bi);
+        batch.push(+el.dataset.bi);
       }
+      (async () => {
+        let n = 0;
+        for (const bi of batch) {
+          forceRenderBlock(bi);
+          if ((++n & 15) === 15) await new Promise(r => setTimeout(r, 0));   // 让出主线程
+        }
+      })();
     });
   } else {
     for (const el of els) tokenizeBlock(el, parsed.blocks[+el.dataset.bi]);
@@ -744,11 +754,23 @@ function insertTranslation(bi, text) {
 async function applyCachedTranslations() {
   if (!S.cur || !settings.showTranslation) return 0;
   const { article, parsed } = S.cur;
+  // 一次事务把缓存全读出来，再按前缀挑 —— 原来是「每段 await 一次」，
+  // 几千段就是几千个事务，又慢又容易把主线程拖住。
+  const map = new Map();
+  try {
+    const rows = await db.all('aica');
+    const pfx = `tr:${article.id}:`;
+    for (const r of rows) {
+      if (r && typeof r.k === 'string' && r.k.startsWith(pfx) && r.text) {
+        map.set(+r.k.slice(pfx.length), r.text);
+      }
+    }
+  } catch {}
   let missing = 0;
   for (let bi = 0; bi < parsed.blocks.length; bi++) {
     if (parsed.blocks[bi].type === 'h') continue;
-    const hit = await db.get('aica', trKey(article.id, bi));
-    if (hit && hit.text) insertTranslation(bi, hit.text);
+    const t = map.get(bi);
+    if (t) insertTranslation(bi, t);
     else missing++;
   }
   if (isPaged()) relayoutPages(true);
@@ -1351,19 +1373,73 @@ async function gradeReview(g) {
 
 /* ══════════════════════════  生词操作  ══════════════════════════ */
 
+/** 取某个词元素里的「纯单词文本」（ruby 的 textContent 会带上 rt 里的中文） */
+function baseTextOf(el) {
+  for (const n of el.childNodes) if (n.nodeType === 3) return n.nodeValue;
+  return (el.dataset && el.dataset.w) || '';
+}
+
+/** 只重建这一个词元素：该有注释就变成 ruby，不该有就退回 span。
+ *  绝不再整体重绘 —— 5.8 万词的书重绘一次要一秒多，收藏一个词就卡一下。 */
+function rebuildWordEl(el) {
+  const w = el.dataset.w;
+  if (!w) return;
+  const info = annoInfoFor(w);
+  const on = S.vocab.has(w) || S.vocab.has(dict.resolveBase(w));
+  const wantRuby = !!info;
+  const cls = 'w' + (wantRuby ? ' has-anno' : '') + (info && info.mine ? ' anno-mine' : '')
+    + (on ? ' saved' : '');
+
+  if (wantRuby === (el.tagName === 'RUBY')) {           // 结构不用变，就地改
+    el.className = cls;
+    if (wantRuby) {
+      let rt = el.querySelector('rt');
+      if (!rt) { rt = document.createElement('rt'); el.appendChild(rt); }
+      rt.textContent = info.text + '\u00a0\ud83d\udd0a';
+      if (info.phonetic) el.dataset.ph = info.phonetic; else delete el.dataset.ph;
+    }
+    return;
+  }
+  const neu = document.createElement(wantRuby ? 'ruby' : 'span');
+  neu.className = cls;
+  neu.dataset.w = w;
+  if (el.dataset.sid) neu.dataset.sid = el.dataset.sid;
+  neu.textContent = baseTextOf(el);
+  if (wantRuby) {
+    const rt = document.createElement('rt');
+    rt.textContent = info.text + '\u00a0\ud83d\udd0a';
+    if (info.phonetic) neu.dataset.ph = info.phonetic;
+    neu.appendChild(rt);
+  }
+  el.replaceWith(neu);
+}
+
+/** 只刷新「已经渲染出来的」词。大书里这些通常只有几百到几千个。
+ *  分片处理并且每隔一小批就让出主线程 —— 单个任务绝不超过几十毫秒，
+ *  否则 5.8 万词的书一次性重建会让 Chrome 弹「页面无响应」。 */
+async function refreshRenderedWords(filter) {
+  const list = [];
+  for (const el of $$('#reader-body .w')) {
+    if (!filter || filter(el)) list.push(el);
+  }
+  for (let i = 0; i < list.length; i++) {
+    rebuildWordEl(list[i]);
+    if ((i & 15) === 15) await new Promise(r => setTimeout(r, 0));
+  }
+}
+
 /** 把文中所有「原形等于 base」的词标上/去掉下划线（包含 running→run 这类变形） */
 function markWordSaved(base, on) {
   const b = String(base).toLowerCase();
-  $$('#reader-body .w').forEach(el => {
+  const hit = el => {
     const w = el.dataset.w;
-    if (!w) return;
-    if (w === b || dict.resolveBase(w) === b) el.classList.toggle('saved', on);
-  });
-  // 注释开着时要重绘：生词本里的词用另一种配色，而且可能因此「够格」被标上释义。
-  // 这里没有做局部替换，因为要重建的可能是一个 span ↔ ruby 的结构变化，重绘最稳。
+    return w && (w === b || dict.resolveBase(w) === b);
+  };
   if (settings.annotate && settings.annotate !== 'off') {
-    annoMemo.clear();
-    rerenderReader();
+    // 注释开着：需要重建元素（span ↔ ruby，配色也要换）
+    refreshRenderedWords(hit);
+  } else {
+    $$('#reader-body .w').forEach(el => { if (hit(el)) el.classList.toggle('saved', on); });
   }
 }
 
@@ -2037,7 +2113,8 @@ const ACTIONS = {
     settings.annotate = order[(i + 1) % order.length];
     saveSettings(); annoMemo.clear();
     if (btn) btn.classList.toggle('is-on', settings.annotate !== 'off');
-    rerenderReader();
+    // 先给出反馈，再在下一帧开始刷新（只刷新已渲染的词，避免大书卡死）
+    requestAnimationFrame(() => refreshRenderedWords());
     const label = { off: '已关闭注释', cet6: '六级以上', ky: '考研以上', toefl: '托福/雅思以上' };
     toast(settings.annotate === 'off'
       ? '已关闭生词注释'
@@ -2535,7 +2612,7 @@ function wire() {
   $('#set-justify').addEventListener('change', e => { settings.justify = e.target.checked; saveSettings(); });
   $('#set-annotate').addEventListener('change', e => {
     settings.annotate = e.target.value; saveSettings(); annoMemo.clear();
-    rerenderReader();
+    refreshRenderedWords();
   });
   $('#set-sync-ai').addEventListener('change', e => {
     settings.syncAiKey = e.target.checked;
@@ -2547,7 +2624,7 @@ function wire() {
   });
   $('#set-anno-phon').addEventListener('change', e => {
     settings.annotatePhonetic = e.target.checked; saveSettings(); annoMemo.clear();
-    rerenderReader();
+    refreshRenderedWords();
   });
   $('#set-translation').addEventListener('change', e => {
     settings.showTranslation = e.target.checked; saveSettings();

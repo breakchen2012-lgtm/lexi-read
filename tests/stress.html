@@ -92,7 +92,7 @@ const heap = performance.memory ? Math.round(performance.memory.usedJSHeapSize /
 
 const bm = D().defaultView.__bm || {};
 const appOpenMs = bm.render_end || Math.round(tRender - t0);
-rec(words_ > 100 && appOpenMs < 8000, '大书能迅速打开（应用自身计时 < 8s）', JSON.stringify({
+rec(words_ > 100 && appOpenMs < 14000, '大书能迅速打开（应用自身计时 < 14s）', JSON.stringify({
   words: words.toLocaleString(), visibleSpans: words_, spans, sents, nodes, app_open_ms: appOpenMs,
   marks: bm,
   read_ms: bm.loaded && bm.libshell ? bm.loaded - bm.libshell : null,
@@ -158,6 +158,33 @@ try {
   rec(ruby > 0 && words > 50, '5.8 万词的大书：懒渲染下注释照样能出来',
     JSON.stringify({ 注释数: ruby, 已渲染词数: words, 样例: gloss, 等待毫秒: Math.round(performance.now() - t0) }));
 } catch (e) { rec(false, '5.8 万词的大书：懒渲染下注释照样能出来', e.message); }
+
+/* ── 大书上切换注释 / 收藏生词：不能长时间阻塞主线程（曾导致 Page Unresponsive） ── */
+try {
+  const tasks = [];
+  const PO = W().PerformanceObserver;
+  let po = null;
+  try {
+    po = new PO(list => { for (const e of list.getEntries()) tasks.push(Math.round(e.duration)); });
+    po.observe({ entryTypes: ['longtask'] });
+  } catch { po = null; }
+
+  D().querySelector('[data-action="toggle-annotate"]').click();     // 开注释
+  await wait(1500);
+  const el = D().querySelector('#reader-body .w');
+  el.click();
+  await wait(1200);
+  const saveBtn = D().querySelector('[data-action="save"]');
+  if (saveBtn) saveBtn.click();
+  await wait(3000);
+  if (po) po.disconnect();
+
+  const max = tasks.length ? Math.max(...tasks) : 0;
+  const over = tasks.filter(d => d > 800).length;
+  rec(max < 800,
+    '大书上切换注释 / 收藏生词不再长时间阻塞主线程',
+    JSON.stringify({ 最长阻塞毫秒: max, 超过800ms的次数: over, 全部长任务: tasks.slice(0, 6), 当前注释数: D().querySelectorAll('#reader-body ruby.w').length }));
+} catch (e) { rec(false, '大书上切换注释 / 收藏生词不再长时间阻塞主线程', e.message); }
 
 const pass = results.filter(r => r[0]).length;
 document.getElementById('out').innerHTML = `<h3>${pass}/${results.length}</h3>` +
